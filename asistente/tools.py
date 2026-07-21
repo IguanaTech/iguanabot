@@ -38,6 +38,40 @@ def _get(consorcio: Consorcio, path: str, params: dict | None = None) -> Any:
         return resp.json()
 
 
+def _accion(consorcio: Consorcio, ruta: str, telefono: str, params: dict | None = None,
+            confirmar: bool = False) -> dict:
+    """POST a una acción de ESCRITURA del bot (B27). El back resuelve al empleado por su `telefono`,
+    re-chequea SU permiso del CRM y ejecuta EN SU NOMBRE (el bot no tiene poderes propios).
+    `confirmar=False` valida y devuelve un preview SIN mutar; True ejecuta. Devuelve el json;
+    en error devuelve {'_error': <mensaje del back>}."""
+    url = consorcio.backend_url + "/api/crm/asistente/accion/" + ruta
+    headers = {"Authorization": f"Bearer {auth.token_de(consorcio)}"}
+    body: dict = {"telefono": telefono, "confirmar": bool(confirmar)}
+    if params:
+        body.update({k: v for k, v in params.items() if v not in (None, "")})
+    with httpx.Client(timeout=30) as client:
+        resp = client.post(url, headers=headers, json=body)
+        try:
+            data = resp.json()
+        except Exception:  # noqa: BLE001
+            data = {}
+        if resp.status_code >= 400:
+            msg = (data.get("error") or {}).get("message") or data.get("message") or f"error {resp.status_code}"
+            return {"_error": msg}
+        return data
+
+
+def _resultado_accion(r: dict) -> str:
+    """Traduce la respuesta de una acción a un texto para el usuario. Distingue: error, preview de
+    confirmación (paso 1), o ejecutado (paso 2)."""
+    if r.get("_error"):
+        return f"No se pudo: {r['_error']}"
+    if r.get("requiere_confirmacion"):
+        return (f"⚠️ CONFIRMACIÓN — {r.get('resumen', '')} "
+                "Dime que SÍ (ej. 'sí, hazlo') para ejecutarlo.")
+    return "✅ Listo, hecho."
+
+
 def _rd(v) -> str:
     """Monto → 'RD$ 137.925' (punto de miles, estilo dominicano). Acepta bigint ('137925') o
     decimal ('3300.00'); redondea a peso entero."""
@@ -786,7 +820,69 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
             f"ticket {t.get('codigo_ticket')} {_rd(t.get('premio'))}" for t in top
         )
 
+    # ── ACCIONES DE ESCRITURA (B27) ──────────────────────────────────────────────────
+    # El back re-chequea el permiso de QUIEN escribe y ejecuta en su nombre. SIEMPRE con
+    # confirmación de 2 pasos: primero con confirmado=False (muestra el preview), y solo tras el "sí"
+    # del usuario, con confirmado=True. NUNCA pasar confirmado=True sin que el usuario haya confirmado.
+    def bloquear_numero(numero: str, loteria: str, banca: str = "", confirmado: bool = False) -> str:
+        """BLOQUEA un número caliente (cupo 0) para que no se le siga vendiendo. Úsalo para 'bloquea
+        el 27 en Leidsa', 'cierra el número X'. `numero` y `loteria` (por nombre) obligatorios;
+        `banca` opcional (si el bloqueo es solo para una banca). Paso 1: confirmado=False → preview."""
+        lot, disp = _resolver(consorcio, "/api/loterias", loteria)
+        if not lot:
+            return f"No encontré la lotería '{loteria}'. Loterías: {', '.join(disp[:20]) or '—'}."
+        params = {"numero": str(numero), "loteria_id": lot["id"]}
+        if banca:
+            b, dispb = _resolver(consorcio, "/api/bancas", banca)
+            if not b:
+                return f"No encontré la banca '{banca}'. Bancas: {', '.join(dispb[:20]) or '—'}."
+            params["banca_id"] = b["id"]
+        return _resultado_accion(_accion(consorcio, "bloquear-numero", telefono, params, confirmado))
+
+    def gestionar_alerta(tipo_alerta: str, ref_id: str, accion: str, motivo: str = "",
+                         confirmado: bool = False) -> str:
+        """RECONOCE, POSPONE o RESUELVE una alerta del panel. `accion` = reconocer | posponer |
+        resolver. `tipo_alerta` y `ref_id` los obtienes de la herramienta de alertas del día. Las
+        alertas de dinero exigen `motivo`. Paso 1: confirmado=False → preview."""
+        params = {"tipo_alerta": tipo_alerta, "ref_id": ref_id, "accion": accion, "motivo": motivo}
+        return _resultado_accion(_accion(consorcio, "gestionar-alerta", telefono, params, confirmado))
+
+    def asignar_tarea(tarea_id: str, mensajero: str, confirmado: bool = False) -> str:
+        """DESPACHA / asigna una tarea a un mensajero. `tarea_id` de la herramienta de tareas del
+        mensajero; `mensajero` por nombre. Paso 1: confirmado=False → preview."""
+        m, disp = _resolver(consorcio, "/api/empleados", mensajero, campo="nombre_real",
+                            extra={"rol": "mensajero"})
+        if not m:
+            return f"No encontré al mensajero '{mensajero}'. Mensajeros: {', '.join(disp[:20]) or '—'}."
+        params = {"tarea_id": tarea_id, "mensajero_id": m["id"]}
+        return _resultado_accion(_accion(consorcio, "asignar-tarea", telefono, params, confirmado))
+
+    def aprobar_solicitud(solicitud_id: str, mensaje: str = "", confirmado: bool = False) -> str:
+        """APRUEBA (acepta) una solicitud pendiente. `solicitud_id` de la solicitud. `mensaje`
+        opcional para el encargado. Paso 1: confirmado=False → preview."""
+        params = {"solicitud_id": solicitud_id, "mensaje": mensaje}
+        return _resultado_accion(_accion(consorcio, "aprobar-solicitud", telefono, params, confirmado))
+
+    def cargar_egreso(monto: str, categoria: str, descripcion: str = "", banca: str = "",
+                      confirmado: bool = False) -> str:
+        """CARGA un egreso (gasto). `monto` entero en pesos, `categoria` por nombre (ej. Combustible,
+        Alquiler), `descripcion` opcional, `banca` opcional si el gasto es de una banca. Paso 1:
+        confirmado=False → preview."""
+        params = {"monto": str(monto), "categoria": categoria, "descripcion": descripcion}
+        if banca:
+            b, dispb = _resolver(consorcio, "/api/bancas", banca)
+            if not b:
+                return f"No encontré la banca '{banca}'. Bancas: {', '.join(dispb[:20]) or '—'}."
+            params["banca_id"] = b["id"]
+        return _resultado_accion(_accion(consorcio, "cargar-egreso", telefono, params, confirmado))
+
     todas = [
+        # Acciones de escritura (B27) — el back gatea por el permiso de quien escribe.
+        StructuredTool.from_function(bloquear_numero),
+        StructuredTool.from_function(gestionar_alerta),
+        StructuredTool.from_function(asignar_tarea),
+        StructuredTool.from_function(aprobar_solicitud),
+        StructuredTool.from_function(cargar_egreso),
         # Dinero / operación en vivo
         StructuredTool.from_function(operativo),
         StructuredTool.from_function(disponible_para_retirar),
@@ -828,5 +924,8 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
     # Usuario ACOTADO (encargado): SOLO herramientas por-banca, ya restringidas a SUS bancas.
     # Se excluyen las de consorcio completo, RRHH-personal, dinero agregado y ganancia de otros.
     seguras = {"reporte_ventas", "reporte_ganancia", "numeros_top", "sla_arreglos",
-               "tareas_mensajero", "ubicacion_mensajero", "catalogo"}
+               "tareas_mensajero", "ubicacion_mensajero", "catalogo",
+               # Acciones de escritura (B27): se ofrecen a todos; el BACK re-chequea el permiso del
+               # empleado que escribe (un encargado sin el permiso recibe 403, no las ejecuta).
+               "bloquear_numero", "gestionar_alerta", "asignar_tarea", "aprobar_solicitud", "cargar_egreso"}
     return [t for t in todas if t.name in seguras]

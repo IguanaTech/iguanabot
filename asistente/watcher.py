@@ -111,24 +111,29 @@ def _get(consorcio: Consorcio, path: str, params: dict | None = None):
         return r.json()
 
 
-def _alarmas_premio(consorcio: Consorcio) -> list[tuple[str, str]]:
-    """Bancas descubiertas: si sale su número más jugado, no lo cubren con su caja.
-    Devuelve (clave, texto) — la clave sirve para marcar el cooldown SOLO tras enviar."""
+def _alarmas_banca_descubierta(consorcio: Consorcio) -> list[tuple[str, str]]:
+    """Banca que NO puede cubrir sus premios REALES: su disponible quedó negativo. La reserva de
+    premios ya congela el monto de los ganadores pendientes; si la caja no alcanza, la banca no
+    puede pagar (money-real y reactivo).
+
+    Reemplaza a la vieja alerta PREDICTIVA de 'premio sin cobertura', que disparaba 'si sale X no
+    puedes pagar' para CADA número descubierto de CADA banca = la operación NORMAL de toda banca
+    (ninguna caja cubre su número grande, para eso está la central) → ruido inmanejable a escala.
+    Fuente: /dashboard/operativo → alertas.bancas_disponible_negativo (banca_id, nombre, hueco)."""
     avisos = []
     try:
-        d = _get(consorcio, "/api/crm/riesgo/cobertura")
+        d = _get(consorcio, "/api/crm/dashboard/operativo")
     except Exception as ex:  # noqa: BLE001
-        print(f"[watcher] cobertura {consorcio.nombre}: {ex}")
+        print(f"[watcher] operativo(descubierta) {consorcio.nombre}: {ex}")
         return avisos
-    for f in d.get("cobertura", []):
-        clave = f"premio:{consorcio.id}:{f.get('estacion_id')}:{f.get('loteria_id')}:{f.get('numero')}"
+    for b in (d.get("alertas", {}) or {}).get("bancas_disponible_negativo", []) or []:
+        clave = f"descubierta:{consorcio.id}:{b.get('banca_id')}"
         if _en_cooldown(clave):
             continue
         avisos.append((clave,
-            f"🔴 *PREMIO SIN COBERTURA* — {f.get('banca_nombre')}\n"
-            f"Número {f.get('numero')} ({f.get('loteria_nombre')}): si sale paga RD$ {f.get('exposicion_pago')}, "
-            f"y su caja es RD$ {f.get('caja')} (le falta RD$ {f.get('descubierto')}).\n"
-            f"Cupo sugerido para cubrirla: RD$ {f.get('tope_sugerido')}. Decide en el CRM → Riesgo."
+            f"🔴 *BANCA SIN FONDOS PARA PREMIOS* — {b.get('nombre')}\n"
+            f"Su caja no cubre los premios que YA debe: le falta RD$ {_fmt_money(b.get('hueco'))}. "
+            f"Fondéala (entrega) o resuélvelo en el CRM antes de que el ganador se presente a cobrar."
         ))
     return avisos
 
@@ -156,34 +161,10 @@ def _alarmas_caliente(consorcio: Consorcio) -> list[tuple[str, str]]:
     return avisos
 
 
-def _alarmas_ganador(consorcio: Consorcio) -> list[tuple[str, str]]:
-    """Ganador REAL alto: un ticket que YA ganó un premio grande hoy (no la exposición: el premio real)."""
-    from datetime import date
-    avisos = []
-    hoy = date.today().isoformat()
-    try:
-        d = _get(consorcio, "/api/reportes/ganadores", {"desde": hoy, "hasta": hoy})
-    except Exception as ex:  # noqa: BLE001
-        print(f"[watcher] ganadores {consorcio.nombre}: {ex}")
-        return avisos
-    for t in d.get("data", []):
-        if t.get("estado") not in ("ganador_pendiente", "ganador_pagado"):
-            continue
-        try:
-            premio = int(t.get("premio") or 0)
-        except (ValueError, TypeError):
-            continue
-        if premio < config.UMBRAL_GANADOR:
-            continue
-        clave = f"ganador:{consorcio.id}:{t.get('id')}"
-        if _en_cooldown(clave):
-            continue
-        estado = "por pagar" if t.get("estado") == "ganador_pendiente" else "pagado"
-        avisos.append((clave,
-            f"🏆 *GANADOR ALTO* — premio de RD$ {premio:,}".replace(",", ".") +
-            f"\nTicket {t.get('codigo_ticket') or t.get('id')} ({estado}). Ojo con la caja de esa banca."
-        ))
-    return avisos
+# La vieja alerta de "GANADOR ALTO" (premio >= UMBRAL) disparaba por CUALQUIER premio grande, aunque
+# la banca lo pudiera pagar sin problema → no es lo que importa. La versión money-aware que pidió
+# Eduardo ("alertar si sacan y NO tiene el dinero") es _alarmas_banca_descubierta (arriba): una banca
+# cuyo disponible quedó negativo = no puede cubrir sus premios reales. Por eso se quitó ésta.
 
 
 def _alarmas_dinero_estancado(consorcio: Consorcio) -> list[tuple[str, str]]:
@@ -247,9 +228,12 @@ def revisar_todos() -> None:
         full = consorcio_por_id(c.id)
         if not full:
             continue
-        # Alarmas de lotería (cooldown de 30 min, dedup en memoria) — solo si ALARMAS_PUSH.
+        # Alarmas de riesgo/dinero (cooldown de 30 min, dedup en memoria) — solo si ALARMAS_PUSH.
+        # Número caliente (dato filtrado) + banca sin fondos para sus premios reales. Se quitó la
+        # alerta PREDICTIVA de cobertura por-número (ruido: toda banca está descubierta en su número
+        # grande por diseño) y el "ganador alto" incondicional (ahora money-aware = banca descubierta).
         avisos = (
-            _alarmas_premio(full) + _alarmas_caliente(full) + _alarmas_ganador(full)
+            _alarmas_caliente(full) + _alarmas_banca_descubierta(full)
             if config.ALARMAS_PUSH else []
         )
         # Recordatorios de dinero vivo (una vez al día, dedup persistido) — solo si RECORDATORIO_DINERO.

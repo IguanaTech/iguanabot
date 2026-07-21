@@ -1,0 +1,49 @@
+# iguana-asistente · Fase 0 (co-locado con el back). Tres piezas: pgvector, asistente (Python),
+# puente (Node/Baileys). El asistente habla a los backs de los consorcios por HTTPS (registro).
+
+services:
+  pgvector:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: asistente
+      POSTGRES_PASSWORD: asistente
+      POSTGRES_DB: asistente
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d:ro   # 001_schema.sql corre al inicializar
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U asistente"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  asistente:
+    build: ./asistente
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      pgvector:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # (dev) alcanzar un back del HOST; en prod usa el registro
+    # Sin `ports:`: el asistente solo lo alcanza el puente por la red interna de Docker (http://asistente:8000).
+    # NO se expone al host/público — /mensaje no tiene auth y no debe ser alcanzable desde afuera.
+    volumes:
+      - whispercache:/root/.cache   # modelo de Whisper (voz): se descarga una vez y persiste
+
+  bridge:
+    build: ./bridge
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - asistente
+    # Sin `ports:`: /enviar (envío proactivo) solo lo usa el asistente por la red interna. No público.
+    volumes:
+      - waauth:/app/auth   # sesión de WhatsApp (Baileys) persistente entre reinicios
+      - ./qr:/app/qrout    # el puente escribe acá el QR como PNG (se sobreescribe en cada rotación)
+
+volumes:
+  pgdata:
+  waauth:
+  whispercache:

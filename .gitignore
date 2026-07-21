@@ -1,0 +1,7 @@
+.env
+bridge/auth/
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+qr/

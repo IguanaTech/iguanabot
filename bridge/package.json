@@ -1,0 +1,21 @@
+{
+  "name": "iguana-asistente-bridge",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Puente WhatsApp (Baileys) ↔ asistente Python. Fase 0: número normal, sin Meta.",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.21",
+    "express": "^4.19.0",
+    "pino": "^9.0.0",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "overrides": {
+    "libsignal": "git+https://github.com/whiskeysockets/libsignal-node.git"
+  }
+}

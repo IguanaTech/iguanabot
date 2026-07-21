@@ -12,8 +12,11 @@ No recomputa nada: relaya las señales que el back ya calcula. Dedup con cooldow
 Solo lectura — avisar no mueve dinero; la decisión de bajar el cupo/bloquear la toma el humano en el CRM.
 """
 import time
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import httpx
+import psycopg
 
 from .config import config
 from .registry import Consorcio, consorcio_por_id, listar_consorcios
@@ -23,6 +26,68 @@ from .scheduler import enviar_por_puente
 # Dedup en memoria: clave → epoch del último aviso ENVIADO. Cooldown evita repetir la misma alarma.
 # (Para producción multi-instancia, mover a la DB; en un proceso alcanza.)
 _ultimo_aviso: dict[str, float] = {}
+
+
+def _fmt_money(v) -> str:
+    """RD$ enteros con separador de miles al estilo local (1.234.567)."""
+    try:
+        return f"{int(v or 0):,}".replace(",", ".")
+    except (ValueError, TypeError):
+        return str(v)
+
+
+def _hoy_tz() -> date:
+    return datetime.now(ZoneInfo(config.REPORTE_TZ)).date()
+
+
+def _hora_tz() -> int:
+    return datetime.now(ZoneInfo(config.REPORTE_TZ)).hour
+
+
+# ── Dedup DIARIO persistido (sobrevive reinicios; el cooldown en memoria no) ──
+# Tabla propia del bot: un recordatorio por (consorcio, ref-de-alerta, día). Se crea sola.
+_tabla_lista = False
+
+
+def _asegurar_tabla_recordatorios() -> None:
+    global _tabla_lista
+    if _tabla_lista:
+        return
+    with psycopg.connect(config.DATABASE_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS recordatorio_diario ("
+                "  consorcio_id text NOT NULL,"
+                "  ref text NOT NULL,"
+                "  dia date NOT NULL,"
+                "  creado_en timestamptz NOT NULL DEFAULT now(),"
+                "  PRIMARY KEY (consorcio_id, ref, dia))"
+            )
+        conn.commit()
+    _tabla_lista = True
+
+
+def _ya_recordado_hoy(consorcio_id: str, ref: str, dia: date) -> bool:
+    _asegurar_tabla_recordatorios()
+    with psycopg.connect(config.DATABASE_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM recordatorio_diario WHERE consorcio_id=%s AND ref=%s AND dia=%s",
+                (consorcio_id, ref, dia),
+            )
+            return cur.fetchone() is not None
+
+
+def _marcar_recordado(consorcio_id: str, ref: str, dia: date) -> None:
+    _asegurar_tabla_recordatorios()
+    with psycopg.connect(config.DATABASE_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO recordatorio_diario (consorcio_id, ref, dia) VALUES (%s,%s,%s) "
+                "ON CONFLICT DO NOTHING",
+                (consorcio_id, ref, dia),
+            )
+        conn.commit()
 
 
 def _en_cooldown(clave: str) -> bool:
@@ -121,15 +186,79 @@ def _alarmas_ganador(consorcio: Consorcio) -> list[tuple[str, str]]:
     return avisos
 
 
+def _alarmas_dinero_estancado(consorcio: Consorcio) -> list[tuple[str, str]]:
+    """Recordatorio de DINERO VIVO estancado (una vez al día HASTA que se resuelva). Lee el tablero
+    operativo del back (que ya quita las alertas gestionadas/reconocidas/pospuestas en el CRM) y
+    relaya las dos alertas de dinero-vivo que faltaban en el canal de WhatsApp:
+      - mensajero_saldo_estancado: mensajero con efectivo en mano hace días sin llevarlo a la central.
+      - bancas_tickets_sin_recoger: banca con papelería vencida sin recoger hace días.
+    Devuelve (ref_estable, texto). El dedup NO es el cooldown de 30 min: es DIARIO y persistido."""
+    avisos = []
+    try:
+        d = _get(consorcio, "/api/crm/dashboard/operativo")
+    except Exception as ex:  # noqa: BLE001
+        print(f"[watcher] operativo {consorcio.nombre}: {ex}")
+        return avisos
+    alertas = d.get("alertas", {}) or {}
+    for m in alertas.get("mensajero_saldo_estancado", []) or []:
+        ref = f"estancado:mensajero:{m.get('mensajero_empleado_id')}"
+        nombre = m.get("mensajero_nombre") or "Un mensajero"
+        dias = m.get("dias_con_dinero")
+        dias_txt = f"{dias} día(s)" if dias is not None else "varios días"
+        avisos.append((ref,
+            f"💵 *DINERO SIN ENTREGAR* — {nombre}\n"
+            f"Lleva {dias_txt} con RD$ {_fmt_money(m.get('saldo'))} en mano sin llevarlo a la central. "
+            f"Coordina la entrega/traspaso, o baja la alerta en el CRM → Operaciones (con motivo)."
+        ))
+    for b in alertas.get("bancas_tickets_sin_recoger", []) or []:
+        ref = f"estancado:tickets:{b.get('banca_id')}"
+        nombre = b.get("nombre") or "Una banca"
+        n = b.get("pendientes") or "?"
+        dias = b.get("dias_mas_viejo")
+        dias_txt = f", el más viejo {dias} día(s)" if dias is not None else ""
+        avisos.append((ref,
+            f"🎫 *TICKETS SIN RECOGER* — {nombre}\n"
+            f"{n} ticket(s) vencidos sin recoger{dias_txt}. "
+            f"Manda a recogerlos, o baja la alerta en el CRM → Operaciones."
+        ))
+    return avisos
+
+
+def _enviar_a_todos(destinos: list[str], texto: str) -> bool:
+    """Empuja `texto` a cada teléfono; devuelve True si salió al menos a uno."""
+    enviado = False
+    for tel in destinos:
+        try:
+            enviar_por_puente(tel, texto, None, None)
+            enviado = True
+        except Exception as ex:  # noqa: BLE001
+            print(f"[watcher] fallo avisando a {tel}: {ex}")
+    return enviado
+
+
 def revisar_todos() -> None:
     """Un ciclo: revisa cada consorcio y empuja las alarmas nuevas a SUS admins (no a los de otro)."""
     consorcios = list(listar_consorcios())
+    hoy = _hoy_tz()
+    # El recordatorio diario solo dispara en horario razonable (no a medianoche). El primer tick del
+    # día tras esta hora lo manda; el dedup persistido evita repetir el resto del día.
+    en_horario = config.RECORDATORIO_DINERO and _hora_tz() >= config.RECORDATORIO_DINERO_HORA
     for c in consorcios:
         full = consorcio_por_id(c.id)
         if not full:
             continue
-        avisos = _alarmas_premio(full) + _alarmas_caliente(full) + _alarmas_ganador(full)
-        if not avisos:
+        # Alarmas de lotería (cooldown de 30 min, dedup en memoria) — solo si ALARMAS_PUSH.
+        avisos = (
+            _alarmas_premio(full) + _alarmas_caliente(full) + _alarmas_ganador(full)
+            if config.ALARMAS_PUSH else []
+        )
+        # Recordatorios de dinero vivo (una vez al día, dedup persistido) — solo si RECORDATORIO_DINERO.
+        recordatorios = (
+            [(ref, txt) for (ref, txt) in _alarmas_dinero_estancado(full)
+             if not _ya_recordado_hoy(full.id, ref, hoy)]
+            if en_horario else []
+        )
+        if not avisos and not recordatorios:
             continue
         # A quién avisar SIN cruzar consorcios: la lista explícita ALARMAS_DESTINATARIOS no trae marca
         # de consorcio, así que solo es segura con UN consorcio (Fase 0). Con 2+ cruzaría alarmas de A
@@ -142,21 +271,18 @@ def revisar_todos() -> None:
             print(f"[watcher] {full.nombre}: hay alarmas pero no hay destinatarios configurados.")
             continue
         for clave, texto in avisos:
-            enviado = False
-            for tel in destinos:
-                try:
-                    enviar_por_puente(tel, texto, None, None)
-                    enviado = True
-                except Exception as ex:  # noqa: BLE001
-                    print(f"[watcher] fallo avisando a {tel}: {ex}")
-            if enviado:  # marca el cooldown SOLO si salió a alguien (si no, reintenta el próximo ciclo)
+            if _enviar_a_todos(destinos, texto):  # marca el cooldown SOLO si salió a alguien
                 _marcar_avisado(clave)
+        for ref, texto in recordatorios:
+            if _enviar_a_todos(destinos, texto):  # marca el día SOLO si salió (si no, reintenta)
+                _marcar_recordado(full.id, ref, hoy)
 
 
 def arrancar() -> None:
-    """Programa el vigilante en un intervalo si ALARMAS_PUSH está activo."""
-    if not config.ALARMAS_PUSH:
-        print("[watcher] vigilante de alarmas APAGADO (ALARMAS_PUSH=false).")
+    """Programa el vigilante en un intervalo. Corre si hay alarmas de lotería (ALARMAS_PUSH) O el
+    recordatorio diario de dinero (RECORDATORIO_DINERO) — cada uno se activa por separado."""
+    if not config.ALARMAS_PUSH and not config.RECORDATORIO_DINERO:
+        print("[watcher] vigilante APAGADO (ALARMAS_PUSH=false y RECORDATORIO_DINERO=false).")
         return
     try:
         from apscheduler.schedulers.background import BackgroundScheduler

@@ -61,6 +61,13 @@ class Config:
     # Lista separada por comas. Fase 0: los admins que quieren recibirlas. (Luego: leerlos del back.)
     ALARMAS_DESTINATARIOS = [t.strip() for t in os.getenv("ALARMAS_DESTINATARIOS", "").split(",") if t.strip()]
 
+    # Recordatorio DIARIO de dinero-vivo estancado (mensajero con efectivo hace días / banca con
+    # tickets sin recoger). Lee /dashboard/operativo (el back ya quita las gestionadas en el CRM) y
+    # recuerda UNA vez al día HASTA que se resuelva. Dedup persistido en la DB (sobrevive reinicios).
+    # Independiente de ALARMAS_PUSH (es el P0 que pidió Eduardo). Se apaga con RECORDATORIO_DINERO=false.
+    RECORDATORIO_DINERO = os.getenv("RECORDATORIO_DINERO", "true").lower() == "true"
+    RECORDATORIO_DINERO_HORA = int(os.getenv("RECORDATORIO_DINERO_HORA", "9"))  # primer tick tras esta hora local
+
     # Seguridad
     AVISAR_DESCONOCIDOS = os.getenv("AVISAR_DESCONOCIDOS", "true").lower() == "true"
 

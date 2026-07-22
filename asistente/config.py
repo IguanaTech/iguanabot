@@ -52,11 +52,19 @@ class Config:
 
     # Reportes
     REPORTE_PDF = os.getenv("REPORTE_PDF", "true").lower() == "true"      # adjuntar PDF además del texto
-    REPORTE_EOD_HORA = os.getenv("REPORTE_EOD_HORA", "21:30")            # hora local del envío automático
     REPORTE_TZ = os.getenv("REPORTE_TZ", "America/Santo_Domingo")
     # Envío automático (proactivo) al cierre. En Fase 0/Baileys, dejar en false para pocos/pruebas;
     # el envío masivo bot-inicia va con la Cloud API oficial + plantillas (Fase 1) para no arriesgar baneo.
     REPORTE_EOD_AUTO = os.getenv("REPORTE_EOD_AUTO", "false").lower() == "true"
+    # Disparo del reporte de cierre: NO a hora fija (una lotería puede cerrar más tarde). El bot
+    # SONDEA el estado del día operativo del back y manda el reporte cuando la ÚLTIMA lotería del día
+    # ya publicó números (premios) + pasó el margen del consorcio → back marca el día como cerrado.
+    REPORTE_EOD_POLL_MIN = int(os.getenv("REPORTE_EOD_POLL_MIN", "10"))    # cada cuánto sondea (min)
+    REPORTE_EOD_DESDE_HORA = int(os.getenv("REPORTE_EOD_DESDE_HORA", "17"))  # no sondea antes de esta hora local
+    # Red de seguridad: si el operador NUNCA cargó la última lotería, el día no cierra y el reporte no
+    # saldría. A esta hora local, si aún no salió, se manda igual marcado como PRELIMINAR (el día no
+    # cerró formalmente). Poner "" para desactivar la red y esperar SIEMPRE el cierre real.
+    REPORTE_EOD_TOPE_HORA = os.getenv("REPORTE_EOD_TOPE_HORA", "23:30")
 
     # Alarmas de dinero (vigilante proactivo)
     # Avisar a los admin/encargado cuando: (a) una banca queda DESCUBIERTA de un premio (no lo puede

@@ -50,6 +50,18 @@ def _safe(consorcio, path, params=None):
         return None
 
 
+def estado_dia_operativo(consorcio: Consorcio) -> dict | None:
+    """Estado del cierre del día operativo del consorcio (LECTURA). Devuelve el dict del back
+    {fecha, cerrado, razon, ...} o None si el back no respondió (se reintenta en el próximo sondeo).
+    El disparo del reporte de cierre se ata a `cerrado=true` (última lotería publicó premios + margen),
+    no a una hora fija."""
+    try:
+        return _get(consorcio, "/api/crm/dashboard/dia-operativo")
+    except Exception as ex:  # noqa: BLE001
+        print(f"[cierre] estado del día de {consorcio.nombre} falló: {ex}")
+        return None
+
+
 @dataclass
 class Reporte:
     consorcio: str

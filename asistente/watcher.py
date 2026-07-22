@@ -119,7 +119,11 @@ def _alarmas_banca_descubierta(consorcio: Consorcio) -> list[tuple[str, str]]:
     Reemplaza a la vieja alerta PREDICTIVA de 'premio sin cobertura', que disparaba 'si sale X no
     puedes pagar' para CADA número descubierto de CADA banca = la operación NORMAL de toda banca
     (ninguna caja cubre su número grande, para eso está la central) → ruido inmanejable a escala.
-    Fuente: /dashboard/operativo → alertas.bancas_disponible_negativo (banca_id, nombre, hueco)."""
+    Fuente: /dashboard/operativo → alertas.bancas_disponible_negativo (banca_id, nombre, hueco).
+
+    Devuelve (ref, texto). El dedup NO es el cooldown de 30 min (spameaba varias veces al día); va
+    con la cadencia DIARIA persistida (una vez al día HASTA que se resuelva), como el recordatorio de
+    dinero estancado — la maneja revisar_todos."""
     avisos = []
     try:
         d = _get(consorcio, "/api/crm/dashboard/operativo")
@@ -127,10 +131,8 @@ def _alarmas_banca_descubierta(consorcio: Consorcio) -> list[tuple[str, str]]:
         print(f"[watcher] operativo(descubierta) {consorcio.nombre}: {ex}")
         return avisos
     for b in (d.get("alertas", {}) or {}).get("bancas_disponible_negativo", []) or []:
-        clave = f"descubierta:{consorcio.id}:{b.get('banca_id')}"
-        if _en_cooldown(clave):
-            continue
-        avisos.append((clave,
+        ref = f"descubierta:{b.get('banca_id')}"
+        avisos.append((ref,
             f"🔴 *BANCA SIN FONDOS PARA PREMIOS* — {b.get('nombre')}\n"
             f"Su caja no cubre los premios que YA debe: le falta RD$ {_fmt_money(b.get('hueco'))}. "
             f"Fondéala (entrega) o resuélvelo en el CRM antes de que el ganador se presente a cobrar."
@@ -228,17 +230,15 @@ def revisar_todos() -> None:
         full = consorcio_por_id(c.id)
         if not full:
             continue
-        # Alarmas de riesgo/dinero (cooldown de 30 min, dedup en memoria) — solo si ALARMAS_PUSH.
-        # Número caliente (dato filtrado) + banca sin fondos para sus premios reales. Se quitó la
-        # alerta PREDICTIVA de cobertura por-número (ruido: toda banca está descubierta en su número
-        # grande por diseño) y el "ganador alto" incondicional (ahora money-aware = banca descubierta).
-        avisos = (
-            _alarmas_caliente(full) + _alarmas_banca_descubierta(full)
-            if config.ALARMAS_PUSH else []
-        )
-        # Recordatorios de dinero vivo (una vez al día, dedup persistido) — solo si RECORDATORIO_DINERO.
+        # Alarmas TRANSITORIAS (cooldown de 30 min, en memoria) — solo si ALARMAS_PUSH. Solo el número
+        # caliente (dato filtrado): es un pico transitorio y urgente, re-avisar cada 30 min está bien.
+        avisos = _alarmas_caliente(full) if config.ALARMAS_PUSH else []
+        # Recordatorios de estados PERSISTENTES de dinero (UNA vez al día, dedup persistido) — solo si
+        # RECORDATORIO_DINERO. Dinero estancado del mensajero + banca sin fondos para premios: son
+        # estados que duran días; avisar cada 30 min spameaba (Eduardo 2026-07-21) → una sola vez al
+        # día HASTA que se resuelva (bajar la alerta en el CRM lo apaga).
         recordatorios = (
-            [(ref, txt) for (ref, txt) in _alarmas_dinero_estancado(full)
+            [(ref, txt) for (ref, txt) in (_alarmas_dinero_estancado(full) + _alarmas_banca_descubierta(full))
              if not _ya_recordado_hoy(full.id, ref, hoy)]
             if en_horario else []
         )

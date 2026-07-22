@@ -840,11 +840,19 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
         return _resultado_accion(_accion(consorcio, "bloquear-numero", telefono, params, confirmado))
 
     def gestionar_alerta(tipo_alerta: str, ref_id: str, accion: str, motivo: str = "",
-                         confirmado: bool = False) -> str:
+                         posponer_horas: int = 0, confirmado: bool = False) -> str:
         """RECONOCE, POSPONE o RESUELVE una alerta del panel. `accion` = reconocer | posponer |
         resolver. `tipo_alerta` y `ref_id` los obtienes de la herramienta de alertas del día. Las
-        alertas de dinero exigen `motivo`. Paso 1: confirmado=False → preview."""
+        alertas de dinero exigen `motivo` para reconocer/resolver (posponer NO lo exige).
+
+        Para "recuérdame eso más tarde / no me mandes eso por ahora / hasta mañana": usa
+        accion="posponer" con `posponer_horas` (ej. 3 = más tarde hoy · 8 = por hoy · 24 = mañana).
+        Mientras la alerta esté pospuesta NO se recuerda por WhatsApp; al vencer el plazo vuelve
+        sola. Paso 1: confirmado=False → preview."""
         params = {"tipo_alerta": tipo_alerta, "ref_id": ref_id, "accion": accion, "motivo": motivo}
+        if accion in ("posponer", "pospuesta") and posponer_horas and int(posponer_horas) > 0:
+            hasta = datetime.now(timezone.utc) + timedelta(hours=int(posponer_horas))
+            params["pospuesta_hasta"] = hasta.isoformat()
         return _resultado_accion(_accion(consorcio, "gestionar-alerta", telefono, params, confirmado))
 
     def asignar_tarea(tarea_id: str, mensajero: str, confirmado: bool = False) -> str:

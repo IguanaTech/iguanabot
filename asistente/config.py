@@ -59,8 +59,8 @@ class Config:
     # Disparo del reporte de cierre: NO a hora fija (una lotería puede cerrar más tarde). El bot
     # SONDEA el estado del día operativo del back y manda el reporte cuando la ÚLTIMA lotería del día
     # ya publicó números (premios) + pasó el margen del consorcio → back marca el día como cerrado.
+    # Se sondea todo el día (barato) y se dispara apenas cierra; no hay franja horaria de arranque.
     REPORTE_EOD_POLL_MIN = int(os.getenv("REPORTE_EOD_POLL_MIN", "10"))    # cada cuánto sondea (min)
-    REPORTE_EOD_DESDE_HORA = int(os.getenv("REPORTE_EOD_DESDE_HORA", "17"))  # no sondea antes de esta hora local
     # Red de seguridad: si el operador NUNCA cargó la última lotería, el día no cierra y el reporte no
     # saldría. A esta hora local, si aún no salió, se manda igual marcado como PRELIMINAR (el día no
     # cerró formalmente). Poner "" para desactivar la red y esperar SIEMPRE el cierre real.

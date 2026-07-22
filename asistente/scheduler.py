@@ -83,10 +83,9 @@ def revisar_cierres() -> dict:
     hoy, manda el reporte. Devuelve un conteo por consorcio con lo que pasó."""
     from .watcher import _ya_recordado_hoy, _marcar_recordado  # diferido: evita el ciclo con watcher
 
+    # Sin gate de hora: el reporte se ata al cierre REAL del día (última lotería publicada + margen),
+    # no a una franja horaria. Se sondea todo el día; el dedup evita reenvíos y el sondeo es barato.
     ahora = datetime.now(_tz())
-    if ahora.hour < config.REPORTE_EOD_DESDE_HORA:
-        return {}  # muy temprano: ninguna lotería cierra a esta hora
-
     tope = _hhmm(config.REPORTE_EOD_TOPE_HORA)
     en_tope = tope is not None and (ahora.hour, ahora.minute) >= tope
 
@@ -163,5 +162,5 @@ def arrancar() -> None:
     )
     sched.start()
     tope = config.REPORTE_EOD_TOPE_HORA or "(sin red)"
-    print(f"[scheduler] cierre por evento: sondeo c/{config.REPORTE_EOD_POLL_MIN}min desde las "
-          f"{config.REPORTE_EOD_DESDE_HORA}:00, tope {tope} {config.REPORTE_TZ}.")
+    print(f"[scheduler] cierre por evento: sondeo del día operativo c/{config.REPORTE_EOD_POLL_MIN}min, "
+          f"dispara al cerrar; tope {tope} {config.REPORTE_TZ}.")

@@ -72,8 +72,10 @@ class Reporte:
 def datos_dia(consorcio: Consorcio, dia: date | None = None) -> Reporte:
     dia = dia or date.today()
     d = dia.isoformat()
-    # Endpoints verificados contra fortuna-api (2026-07-17). Rango del día: desde/hasta = d.
-    # ventas → resumen.monto ; pnl → resumen.resultado_operativo ; ganadores → resumen.totalPremios.
+    # Endpoints verificados contra fortuna-api (claves reales del resumen, 2026-07-22):
+    # ventas → resumen.total_monto ; pnl → resumen.resultado_operativo ;
+    # ganadores → resumen.total_premios / premios_por_pagar / total_pagados. Una fecha pelada = día
+    # dominicano completo (el back interpreta YYYY-MM-DD como 00:00–23:59 −04:00).
     datos = {
         "operativo":  _safe(consorcio, "/api/crm/dashboard/operativo"),
         "ventas":     _safe(consorcio, "/api/reportes/ventas", {"desde": d, "hasta": d}),
@@ -122,7 +124,9 @@ def texto(rep: Reporte) -> str:
     fraude = d.get("fraude") or {}
     dic = (op.get("dinero_en_la_calle") or {}) if isinstance(op, dict) else {}
     for l in [
-        _linea("Ventas del día", _rd(_resumen(d.get("ventas"), "monto"))),
+        # El resumen de /api/reportes/ventas expone `total_monto` (no `monto`): sin esto la línea de
+        # ventas se caía SIEMPRE y el reporte de cierre parecía "sin ventas" aun con ventas reales.
+        _linea("Ventas del día", _rd(_resumen(d.get("ventas"), "total_monto", "monto"))),
         _linea("Ganancia (resultado)", _rd(_resumen(d.get("pnl"), "resultado_operativo"))),
         # El wire del back es snake_case (deepSnake global): total_premios, premios_por_pagar.
         _linea("Premios (total)", _rd(_resumen(d.get("ganadores"), "total_premios"))),

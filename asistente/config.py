@@ -18,6 +18,18 @@ class Config:
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
     LLM_MODEL = os.getenv("LLM_MODEL", "claude-haiku-4-5")
     LLM_MODEL_ESCALADA = os.getenv("LLM_MODEL_ESCALADA", "claude-sonnet-5")
+    # Escala #1: ventana deslizante de mensajes que ve el LLM (poda del historial). El hilo COMPLETO
+    # sigue en el checkpoint; esto solo acota lo que se le manda a Claude (costo/latencia/contexto).
+    # 24 ≈ 12 turnos — suficiente para el contexto reciente sin reenviar toda la conversación.
+    CONVERSACION_MAX_MSGS = int(os.getenv("CONVERSACION_MAX_MSGS", "24"))
+    # Escala #2: TTL de la caché de identidad (teléfono→consorcio). Evita re-preguntarle a TODOS los
+    # backs en cada mensaje. Corto para que un alta/cambio de rol en el CRM se refleje pronto.
+    IDENTIDAD_CACHE_TTL_SEG = int(os.getenv("IDENTIDAD_CACHE_TTL_SEG", "300"))
+    # Escala #3: retención de memoria. Sin esto la memoria crece para siempre (un checkpoint por
+    # usuario que nunca se limpia + la bitácora write-only). Borra hilos INACTIVOS (último checkpoint
+    # más viejo que N días) y purga bitácora vieja. Corre 1×/día.
+    CHECKPOINT_RETENCION_DIAS = int(os.getenv("CHECKPOINT_RETENCION_DIAS", "30"))
+    BITACORA_RETENCION_DIAS = int(os.getenv("BITACORA_RETENCION_DIAS", "90"))
 
     DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
     DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")

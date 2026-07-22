@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from .config import config
 from .graph import responder, preparar_memoria
 from .identity import BackInalcanzable, consorcio_de, resolver, sincronizar_todos
-from . import reportes, scheduler, voice, watcher
+from . import reportes, retencion, scheduler, voice, watcher
 
 app = FastAPI(title="iguana-asistente")
 
@@ -33,6 +33,8 @@ def _startup() -> None:
     scheduler.arrancar()
     # Arranca el vigilante de alarmas de dinero (premio sin cobertura + número caliente).
     watcher.arrancar()
+    # Retención de memoria (escala #3): borra hilos inactivos + purga bitácora vieja, 1×/día.
+    retencion.arrancar()
 
 
 class MensajeEntrante(BaseModel):

@@ -4,6 +4,7 @@ El directorio (teléfono → consorcio + usuario) se autollena jalando el roster
 Número desconocido = no se le sirve nada (seguridad: el asistente ve a todos).
 """
 import re
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -47,17 +48,42 @@ class BackInalcanzable(Exception):
     'no puedo verificar ahora' en vez de 'no te reconozco' (que suena a desautorización)."""
 
 
+# Caché de identidad (escala #2): teléfono → (expira_en, Identidad|None). Sin esto, CADA mensaje
+# entrante recorre TODOS los backs registrados (O(N) HTTP) para saber quién escribe → con muchos
+# consorcios es un cuello. Se cachea el ÉXITO y el "desconocido" (un back respondió pero no lo
+# reconoce), NO el outage (BackInalcanzable) → un back caído reintenta enseguida, no queda pegado.
+# En memoria (por proceso); TTL corto para que un alta/cambio de rol en el CRM se refleje pronto.
+_IDENTIDAD_CACHE: dict[str, tuple[float, "Identidad | None"]] = {}
+
+
+def _cache_leer(tel: str):
+    hit = _IDENTIDAD_CACHE.get(tel)
+    if hit and hit[0] > time.monotonic():
+        return True, hit[1]
+    if hit:
+        _IDENTIDAD_CACHE.pop(tel, None)  # vencido
+    return False, None
+
+
+def _cache_guardar(tel: str, ident: "Identidad | None") -> None:
+    _IDENTIDAD_CACHE[tel] = (time.monotonic() + config.IDENTIDAD_CACHE_TTL_SEG, ident)
+
+
 def resolver(telefono: str) -> Identidad | None:
     """Resuelve el teléfono contra el BACK (tabla asistente_contactos, configurable desde el CRM).
     Recorre los consorcios registrados; el que lo reconoce define su consorcio, rol y ALCANCE.
     Devuelve None = desconocido/desactivado (un back respondió pero no lo reconoce). Lanza
     BackInalcanzable si NINGÚN back respondió (para distinguir outage de desconocido aguas abajo).
+    Cachea el resultado por TTL (escala #2) para no re-preguntarle a todos los backs cada mensaje.
 
     FAIL-CLOSED (a propósito): ante un error del resolver (back caído, endpoint 4xx/5xx, timeout) NO
     hay fallback que conceda acceso. Antes se caía al directorio local concediendo es_global=True a
     todos — un hueco: un hipo del back = acceso global para cualquiera. Un back caído deja al bot sin
     servir (BackInalcanzable), nunca permisivo."""
     tel = _normalizar(telefono)
+    en_cache, ident = _cache_leer(tel)
+    if en_cache:
+        return ident  # éxito o "desconocido" cacheado → sin fan-out a los backs
     algun_back_respondio = False
     for c in listar_consorcios():
         full = consorcio_por_id(c.id)
@@ -70,7 +96,7 @@ def resolver(telefono: str) -> Identidad | None:
             print(f"[identidad] resolver en {full.nombre} falló: {ex}")
             continue
         if r:
-            return Identidad(
+            ident = Identidad(
                 telefono=tel,
                 consorcio_id=full.id,
                 empleado_id=r.get("empleado_id"),
@@ -79,10 +105,14 @@ def resolver(telefono: str) -> Identidad | None:
                 es_global=bool(r.get("es_global")),
                 banca_ids=r.get("banca_ids") or [],
             )
+            _cache_guardar(tel, ident)
+            return ident
     # Ningún back reconoció el teléfono. Si además NINGUNO respondió, es un outage (no un desconocido):
     # se señala para que el mensaje sea distinto. Sigue fail-closed (no se sirve nada en ambos casos).
+    # El outage NO se cachea (para reintentar enseguida); el "desconocido" sí (evita el fan-out por spam).
     if not algun_back_respondio:
         raise BackInalcanzable(tel)
+    _cache_guardar(tel, None)
     return None
 
 

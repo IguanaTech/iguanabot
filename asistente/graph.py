@@ -9,6 +9,7 @@ from datetime import date
 from functools import lru_cache
 
 from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import trim_messages
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
 
@@ -169,6 +170,28 @@ def _modelo():
     )
 
 
+def _pre_model_hook(state):
+    """Poda deslizante del historial que se le manda al LLM: solo los últimos N mensajes. Acota el
+    COSTO (no reenviar toda la conversación a Claude en cada mensaje), la latencia y el riesgo de
+    desbordar el contexto en hilos largos — el hueco #1 de escala. `start_on='human'` arranca la
+    ventana en un turno humano para NO cortar un par tool_call↔tool_result (Anthropic lo rechaza).
+    Solo recorta lo que VE el modelo (`llm_input_messages`); el historial completo sigue en el
+    checkpoint y la retención borra los hilos inactivos."""
+    msgs = state["messages"]
+    if len(msgs) <= config.CONVERSACION_MAX_MSGS:
+        return {}
+    recortado = trim_messages(
+        msgs,
+        token_counter=len,          # 1 mensaje = 1 "token" → conserva los últimos N MENSAJES
+        max_tokens=config.CONVERSACION_MAX_MSGS,
+        strategy="last",
+        start_on="human",
+        include_system=False,
+        allow_partial=False,
+    )
+    return {"llm_input_messages": recortado or msgs[-1:]}
+
+
 def responder(identidad: Identidad, consorcio: Consorcio, texto: str) -> str:
     """Corre el agente para un mensaje y devuelve la respuesta en texto."""
     if identidad.es_global:
@@ -193,6 +216,7 @@ def responder(identidad: Identidad, consorcio: Consorcio, texto: str) -> str:
         _modelo(),
         construir_tools(consorcio, identidad.telefono, identidad),
         prompt=system,
+        pre_model_hook=_pre_model_hook,   # ventana deslizante del historial (escala #1)
         checkpointer=_checkpointer(),
     )
     # thread_id = teléfono → cada usuario mantiene su hilo durable.

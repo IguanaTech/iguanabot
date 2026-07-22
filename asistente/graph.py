@@ -5,7 +5,7 @@ puede ejecutar acciones (bloquear número, gestionar alerta, despachar tarea, ap
 egreso) SIEMPRE en nombre de quien escribe (el back re-chequea su permiso) y con confirmación de dos
 pasos. La memoria de conversación es durable por usuario (thread_id = teléfono) en Postgres.
 """
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 
 from langchain_anthropic import ChatAnthropic
@@ -209,7 +209,9 @@ def responder(identidad: Identidad, consorcio: Consorcio, texto: str) -> str:
         consorcio=consorcio.nombre,
         nombre=identidad.nombre or "el usuario",
         rol=identidad.rol or "operador",
-        fecha_hoy=date.today().isoformat(),
+        # Hoy DOMINICANO (el container corre en UTC; el prompt dice "zona horaria de RD", así que el
+        # LLM debe recibir el día RD real, no el UTC — si no, "ayer" se corría cerca de medianoche).
+        fecha_hoy=datetime.now(timezone(timedelta(hours=-4))).date().isoformat(),
         alcance=alcance,
     )
     agente = create_react_agent(

@@ -111,9 +111,19 @@ def _hace(ts) -> str:
         return str(ts)
 
 
+# Hoy en zona DOMINICANA. El container corre en UTC → date.today() da el día equivocado cerca de la
+# medianoche (ej. 9pm RD ya es el día siguiente en UTC) y "hoy"/"ayer" salían corridos. RD = UTC-4
+# fijo (no tiene horario de verano desde 2007).
+_TZ_RD = timezone(timedelta(hours=-4))
+
+
+def _hoy_rd() -> date:
+    return datetime.now(_TZ_RD).date()
+
+
 def _rango(desde: str, hasta: str) -> tuple[str, str]:
-    """Normaliza el rango de fechas. Vacío = hoy. Solo `desde` = desde..hoy. Formato AAAA-MM-DD."""
-    hoy = date.today().isoformat()
+    """Normaliza el rango de fechas. Vacío = hoy (dominicano). Solo `desde` = desde..hoy. AAAA-MM-DD."""
+    hoy = _hoy_rd().isoformat()
     d = (desde or "").strip() or hoy
     h = (hasta or "").strip() or hoy
     return d, h
@@ -262,7 +272,7 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
         '¿cuánto nos han sacado?', '¿cuánto hemos pagado en premios?', '¿cuánto ganaron los clientes?',
         '¿cuánto salió en premios?'. `dias` = ventana hacia atrás desde hoy (1 = solo hoy, 7 = última
         semana, 30 = último mes). Distingue lo ya PAGADO de lo que está POR PAGAR."""
-        hasta = date.today()
+        hasta = _hoy_rd()
         desde = hasta - timedelta(days=max(1, dias) - 1)
         d = _get(consorcio, "/api/reportes/ganadores",
                  {"desde": desde.isoformat(), "hasta": hasta.isoformat()})
@@ -531,7 +541,7 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
         emp, disp = _resolver(consorcio, "/api/empleados", empleado, campo="nombre_real")
         if not emp:
             return f"No encontré un empleado llamado '{empleado}'. Empleados: {', '.join(disp[:30]) or '—'}."
-        hoy = date.today()
+        hoy = _hoy_rd()
         d = (desde or "").strip() or hoy.replace(day=1).isoformat()
         h = (hasta or "").strip() or hoy.isoformat()
         data = (_get(consorcio, "/api/crm/rrhh/asistencia",

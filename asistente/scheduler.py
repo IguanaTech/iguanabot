@@ -121,6 +121,10 @@ def revisar_cierres() -> dict:
         if enviados > 0:
             _marcar_recordado(c.id, _REF_CIERRE, dia)
         resultado[c.nombre] = ("preliminar" if not cerrado else "cerrado") + f":{enviados}"
+    # Observabilidad: dejamos rastro de lo que hizo cada sondeo que tuvo algo que decidir. flush=True
+    # para que se vea aunque el stdout esté bufferizado bajo uvicorn.
+    if resultado:
+        print(f"[cierre] sondeo {ahora.strftime('%H:%M')} RD => {resultado}", flush=True)
     return resultado
 
 
@@ -141,26 +145,32 @@ def enviar_reporte_cierre() -> dict:
     return resultado
 
 
+# Referencia global al scheduler: BackgroundScheduler corre en su propio hilo, pero si el objeto se
+# recolecta (GC) al salir de arrancar(), el hilo puede morir. La guardamos para que viva todo el proceso.
+_sched = None
+
+
 def arrancar() -> None:
     """Programa el sondeo del cierre si REPORTE_EOD_AUTO está activo."""
+    global _sched
     if not config.REPORTE_EOD_AUTO:
-        print("[scheduler] envío automático de cierre APAGADO (REPORTE_EOD_AUTO=false).")
+        print("[scheduler] envío automático de cierre APAGADO (REPORTE_EOD_AUTO=false).", flush=True)
         return
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
     except Exception as ex:  # noqa: BLE001
-        print(f"[scheduler] APScheduler no disponible ({ex}); no se programa el cierre")
+        print(f"[scheduler] APScheduler no disponible ({ex}); no se programa el cierre", flush=True)
         return
-    sched = BackgroundScheduler(timezone=config.REPORTE_TZ)
+    _sched = BackgroundScheduler(timezone=config.REPORTE_TZ)
     # Sondea el estado del día operativo cada REPORTE_EOD_POLL_MIN minutos; el primer chequeo corre
     # enseguida (por si el día ya cerró cuando el bot arranca de tarde).
-    sched.add_job(
+    _sched.add_job(
         revisar_cierres, "interval",
         minutes=max(1, config.REPORTE_EOD_POLL_MIN),
         id="reporte_cierre",
         next_run_time=datetime.now(_tz()) + timedelta(seconds=20),
     )
-    sched.start()
+    _sched.start()
     tope = config.REPORTE_EOD_TOPE_HORA or "(sin red)"
     print(f"[scheduler] cierre por evento: sondeo del día operativo c/{config.REPORTE_EOD_POLL_MIN}min, "
-          f"dispara al cerrar; tope {tope} {config.REPORTE_TZ}.")
+          f"dispara al cerrar; tope {tope} {config.REPORTE_TZ}.", flush=True)

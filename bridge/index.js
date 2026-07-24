@@ -25,6 +25,7 @@ const PORT = Number(process.env.BRIDGE_PORT || 3100)
 const logger = pino({ level: 'warn' })
 
 let sock = null // referencia viva al socket de WhatsApp (la usan tanto lo entrante como /enviar)
+let waConnected = false // estado REAL de la conexión (para /salud y el watchdog del asistente)
 
 async function preguntarAlAsistente(payload) {
   const resp = await fetch(`${ASISTENTE_URL}/mensaje`, {
@@ -65,7 +66,10 @@ function textoDe(msg) {
 function apiEnvio() {
   const app = express()
   app.use(express.json({ limit: '15mb' })) // PDFs en base64
-  app.get('/salud', (_req, res) => res.json({ ok: true, wa: !!sock }))
+  // `wa` = estado REAL de la conexión (waConnected), no `!!sock`: el socket sigue existiendo tras un
+  // device_removed → `!!sock` daba wa:true con la sesión muerta (falso positivo). El watchdog del
+  // asistente lee esto para el heartbeat.
+  app.get('/salud', (_req, res) => res.json({ ok: true, wa: waConnected }))
   app.post('/enviar', async (req, res) => {
     try {
       if (!sock) return res.status(503).json({ error: 'WhatsApp no conectado' })
@@ -96,6 +100,23 @@ async function iniciar() {
 
   sock.ev.on('creds.update', saveCreds)
 
+  // CÓDIGO DE EMPAREJAMIENTO (más robusto que el QR: el QR de WA rota cada ~20s y la carrera
+  // generar→mostrar→escanear no da tiempo). Si hay número del bot configurado y aún no está
+  // registrado, se pide un código de 8 letras que dura varios minutos y se TECLEA en WhatsApp
+  // (Dispositivos vinculados → Vincular un dispositivo → Vincular con número de teléfono).
+  if (process.env.BRIDGE_PAIR_NUMBER && !sock.authState.creds.registered) {
+    setTimeout(async () => {
+      try {
+        const num = String(process.env.BRIDGE_PAIR_NUMBER).replace(/\D/g, '')
+        const code = await sock.requestPairingCode(num)
+        console.log(`\n=== CÓDIGO DE EMPAREJAMIENTO: ${code} ===`)
+        console.log('(WhatsApp del bot → Dispositivos vinculados → Vincular un dispositivo → Vincular con número de teléfono)\n')
+      } catch (e) {
+        console.error('[bridge] requestPairingCode falló:', e.message)
+      }
+    }, 3000)
+  }
+
   sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
     if (qr) {
       console.log('\n=== Escanea este QR con el WhatsApp del BOT (Dispositivos vinculados) ===\n')
@@ -105,8 +126,9 @@ async function iniciar() {
         .then(() => console.log('[bridge] QR PNG actualizado: qr/qr.png'))
         .catch((e) => console.error('[bridge] no pude escribir el PNG:', e.message))
     }
-    if (connection === 'open') console.log('[bridge] WhatsApp conectado.')
+    if (connection === 'open') { waConnected = true; console.log('[bridge] WhatsApp conectado.') }
     if (connection === 'close') {
+      waConnected = false
       const code = lastDisconnect?.error?.output?.statusCode
       const reconectar = code !== DisconnectReason.loggedOut
       console.log(`[bridge] conexión cerrada (${code}); ${reconectar ? 'reconectando…' : 'sesión cerrada'}`)
@@ -120,8 +142,14 @@ async function iniciar() {
       if (msg.key.fromMe || !msg.message) continue
       const jid = msg.key.remoteJid
       if (!jid || jid.endsWith('@g.us')) continue // grupos: fuera en Fase 0
-      const telefono = jid.split('@')[0]
-      console.log(`[bridge] entrante de jid=${jid} → telefono=${telefono}`)
+      // WhatsApp migró a @lid (identificador de privacidad): remoteJid puede ser un LID
+      // (ej. 268933789696060@lid) en vez del teléfono. El teléfono REAL viene en key.senderPn
+      // (attr sender_pn del stanza). Sin esto el asistente recibía el LID, no reconocía el contacto y
+      // no respondía. Usamos el PN para identificar al contacto Y para responder (entrega al número
+      // real, no al alias LID). Si no hay senderPn (chat PN normal), el jid ya es el teléfono.
+      const destino = msg.key.senderPn || jid
+      const telefono = destino.split('@')[0]
+      console.log(`[bridge] entrante jid=${jid} senderPn=${msg.key.senderPn || '—'} → telefono=${telefono}`)
       try {
         const audioMsg = msg.message.audioMessage
         let payload
@@ -134,10 +162,10 @@ async function iniciar() {
           payload = { telefono, texto }
         }
         const r = await preguntarAlAsistente(payload)
-        await enviarA(jid, r)
+        await enviarA(destino, r)
       } catch (e) {
         console.error('[bridge] error atendiendo mensaje:', e.message)
-        try { await sock.sendMessage(jid, { text: 'Se me complicó procesar eso. Intenta de nuevo.' }) } catch {}
+        try { await sock.sendMessage(destino, { text: 'Se me complicó procesar eso. Intenta de nuevo.' }) } catch {}
       }
     }
   })

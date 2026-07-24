@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from .config import config
 from .graph import responder, preparar_memoria
 from .identity import BackInalcanzable, consorcio_de, resolver, sincronizar_todos
-from . import reportes, retencion, scheduler, voice, watcher
+from . import heartbeat, reportes, retencion, scheduler, voice, watcher
 
 app = FastAPI(title="iguana-asistente")
 
@@ -35,6 +35,8 @@ def _startup() -> None:
     watcher.arrancar()
     # Retención de memoria (escala #3): borra hilos inactivos + purga bitácora vieja, 1×/día.
     retencion.arrancar()
+    # Watchdog: reporta al back si el WhatsApp del bot está conectado → el CRM avisa si se cae.
+    heartbeat.arrancar()
 
 
 class MensajeEntrante(BaseModel):

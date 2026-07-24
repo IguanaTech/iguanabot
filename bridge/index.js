@@ -22,7 +22,7 @@ import QRImage from 'qrcode'
 
 const ASISTENTE_URL = process.env.ASISTENTE_URL || 'http://asistente:8000'
 const PORT = Number(process.env.BRIDGE_PORT || 3100)
-const logger = pino({ level: 'warn' })
+const logger = pino({ level: process.env.BRIDGE_LOG_LEVEL || 'warn' })
 
 let sock = null // referencia viva al socket de WhatsApp (la usan tanto lo entrante como /enviar)
 let waConnected = false // estado REAL de la conexión (para /salud y el watchdog del asistente)
@@ -53,7 +53,11 @@ async function enviarA(jid, r) {
       mimetype: 'audio/ogg; codecs=opus',
     })
   }
-  if (r.texto) await sock.sendMessage(jid, { text: r.texto })
+  if (r.texto) {
+    const sent = await sock.sendMessage(jid, { text: r.texto })
+    // DIAGNÓSTICO: id del mensaje enviado, para correlacionar con messages.update (estado de entrega).
+    console.log(`[bridge] TX a ${jid} → id=${sent?.key?.id} status=${sent?.status}`)
+  }
 }
 
 function textoDe(msg) {
@@ -73,8 +77,9 @@ function apiEnvio() {
   app.post('/enviar', async (req, res) => {
     try {
       if (!sock) return res.status(503).json({ error: 'WhatsApp no conectado' })
-      const { telefono, texto, documento_base64, documento_nombre } = req.body
-      const jid = `${String(telefono).replace(/\D/g, '')}@s.whatsapp.net`
+      const { telefono, texto, documento_base64, documento_nombre, jid: jidRaw } = req.body
+      // jidRaw = override para diagnóstico (ej. enviar a un @lid). Normal: teléfono → @s.whatsapp.net.
+      const jid = jidRaw || `${String(telefono).replace(/\D/g, '')}@s.whatsapp.net`
       await enviarA(jid, { texto, documento_base64, documento_nombre })
       res.json({ ok: true })
     } catch (e) {
@@ -168,6 +173,22 @@ async function iniciar() {
         console.error('[bridge] error atendiendo mensaje:', e.message)
         try { await sock.sendMessage(jid, { text: 'Se me complicó procesar eso. Intenta de nuevo.' }) } catch {}
       }
+    }
+  })
+
+  // DIAGNÓSTICO: estado de ENTREGA de lo que el bot manda. WhatsApp emite messages.update con
+  // status (0=ERROR, 1=PENDING, 2=SERVER_ACK, 3=DELIVERY_ACK, 4=READ). Si un TX se queda en
+  // PENDING/ERROR y nunca sube a SERVER_ACK, WhatsApp NO lo está aceptando (no es el bot).
+  sock.ev.on('messages.update', (updates) => {
+    for (const u of updates) {
+      if (u.update?.status !== undefined || u.update?.messageStubType !== undefined) {
+        console.log(`[bridge] UPDATE id=${u.key?.id} fromMe=${u.key?.fromMe} status=${u.update?.status} stub=${u.update?.messageStubType ?? ''}`)
+      }
+    }
+  })
+  sock.ev.on('message-receipt.update', (updates) => {
+    for (const u of updates) {
+      console.log(`[bridge] RECEIPT id=${u.key?.id} for=${u.key?.remoteJid} ts=${u.receipt?.receiptTimestamp || u.receipt?.readTimestamp || '—'}`)
     }
   })
 }

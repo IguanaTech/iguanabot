@@ -143,12 +143,13 @@ async function iniciar() {
       const jid = msg.key.remoteJid
       if (!jid || jid.endsWith('@g.us')) continue // grupos: fuera en Fase 0
       // WhatsApp migró a @lid (identificador de privacidad): remoteJid puede ser un LID
-      // (ej. 268933789696060@lid) en vez del teléfono. El teléfono REAL viene en key.senderPn
-      // (attr sender_pn del stanza). Sin esto el asistente recibía el LID, no reconocía el contacto y
-      // no respondía. Usamos el PN para identificar al contacto Y para responder (entrega al número
-      // real, no al alias LID). Si no hay senderPn (chat PN normal), el jid ya es el teléfono.
-      const destino = msg.key.senderPn || jid
-      const telefono = destino.split('@')[0]
+      // (ej. 268933789696060@lid) en vez del teléfono. Dos cosas distintas:
+      //  · IDENTIDAD: el asistente reconoce por NÚMERO → usamos el teléfono real de key.senderPn
+      //    (attr sender_pn del stanza). Con el LID el asistente no reconocía el contacto → no respondía.
+      //  · ENTREGA: hay que responder al MISMO chat/sesión por el que llegó (el @lid). Enviar al PN
+      //    `@s.whatsapp.net` no entra en la sesión @lid activa (WhatsApp lo acepta pero no lo entrega).
+      const pn = msg.key.senderPn || jid           // número para identificar el contacto
+      const telefono = pn.split('@')[0]
       console.log(`[bridge] entrante jid=${jid} senderPn=${msg.key.senderPn || '—'} → telefono=${telefono}`)
       try {
         const audioMsg = msg.message.audioMessage
@@ -162,10 +163,10 @@ async function iniciar() {
           payload = { telefono, texto }
         }
         const r = await preguntarAlAsistente(payload)
-        await enviarA(destino, r)
+        await enviarA(jid, r)   // responder al chat original (el @lid), la sesión activa
       } catch (e) {
         console.error('[bridge] error atendiendo mensaje:', e.message)
-        try { await sock.sendMessage(destino, { text: 'Se me complicó procesar eso. Intenta de nuevo.' }) } catch {}
+        try { await sock.sendMessage(jid, { text: 'Se me complicó procesar eso. Intenta de nuevo.' }) } catch {}
       }
     }
   })

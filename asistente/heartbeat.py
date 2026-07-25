@@ -16,10 +16,21 @@ _sched = None
 
 
 def _wa_conectado() -> bool:
-    """Estado REAL de la conexión del puente (/salud → wa). Puente inalcanzable = desconectado."""
+    """¿El bot puede REALMENTE hablar?
+
+    Antes miraba sólo `wa` (socket abierto). Con la cuenta restringida (error 463)
+    el socket sigue conectado pero WhatsApp rechaza todo, así que el CRM pintaba
+    el bot en verde estando mudo. Ahora exige además `entregando`: que no haya
+    envíos recientes sin acuse. (auditoría 2026-07-25)
+    """
     try:
         with httpx.Client(timeout=8) as c:
-            return bool(c.get(f"{config.BRIDGE_URL}/salud").json().get("wa"))
+            s = c.get(f"{config.BRIDGE_URL}/salud").json()
+        if not s.get("wa"):
+            return False
+        # `entregando` lo expone el puente nuevo; si falta (puente viejo), no
+        # degradamos el estado: se cae al comportamiento anterior.
+        return bool(s.get("entregando", True))
     except Exception:  # noqa: BLE001
         return False
 

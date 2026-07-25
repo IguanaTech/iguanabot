@@ -20,6 +20,7 @@ import pino from 'pino'
 import qrcode from 'qrcode-terminal'
 import QRImage from 'qrcode'
 
+const fs = require('fs')
 const ASISTENTE_URL = process.env.ASISTENTE_URL || 'http://asistente:8000'
 const PORT = Number(process.env.BRIDGE_PORT || 3100)
 const logger = pino({ level: process.env.BRIDGE_LOG_LEVEL || 'warn' })
@@ -55,9 +56,53 @@ async function enviarA(jid, r) {
   }
   if (r.texto) {
     const sent = await sock.sendMessage(jid, { text: r.texto })
-    // DIAGNÓSTICO: id del mensaje enviado, para correlacionar con messages.update (estado de entrega).
-    console.log(`[bridge] TX a ${jid} → id=${sent?.key?.id} status=${sent?.status}`)
+    const msgId = sent?.key?.id
+    console.log(`[bridge] TX a ${jid} → id=${msgId} status=${sent?.status}`)
+    // Esperamos el acuse REAL antes de dar el envío por bueno.
+    const ack = await esperarAck(msgId)
+    if (!ack.entregado) anotarNoEntregado({ jid, msgId, motivo: ack.motivo })
+    return ack
   }
+  return { entregado: true, status: null }   // solo audio/documento: sin seguimiento de texto
+}
+
+// ── Registro de ENTREGA (auditoría 2026-07-25) ────────────────────────────────
+// `sendMessage` resuelve en status=1 (PENDING): eso NO es entregado. El rechazo
+// (p.ej. error 463) llega DESPUÉS por `messages.update`. Antes /enviar contestaba
+// {ok:true} en cuanto salía, el scheduler lo marcaba "ya-enviado" y NADIE
+// reintentaba: las alarmas de dinero se perdían en silencio con estado de
+// entregadas. Ahora esperamos el acuse real (status>=2) antes de confirmar.
+const ACK_TIMEOUT_MS = Number(process.env.BRIDGE_ACK_TIMEOUT_MS) || 15000
+const pendientesAck = new Map()   // msgId → {resolve, timer}
+let reintentos = 0                // backoff de reconexión
+const noEntregados = []           // cola muerta para diagnóstico (últimos 50)
+
+function esperarAck(msgId) {
+  if (!msgId) return Promise.resolve({ entregado: false, motivo: 'sin id de mensaje' })
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendientesAck.delete(msgId)
+      resolve({ entregado: false, motivo: `sin acuse en ${ACK_TIMEOUT_MS} ms` })
+    }, ACK_TIMEOUT_MS)
+    pendientesAck.set(msgId, { resolve, timer })
+  })
+}
+
+function resolverAck(msgId, status, extra) {
+  const p = pendientesAck.get(msgId)
+  if (!p) return
+  clearTimeout(p.timer)
+  pendientesAck.delete(msgId)
+  // 0=ERROR 1=PENDING 2=SERVER_ACK 3=DELIVERY_ACK 4=READ. WhatsApp lo ACEPTÓ desde 2.
+  p.resolve(status >= 2
+    ? { entregado: true, status }
+    : { entregado: false, motivo: extra || `WhatsApp devolvió status=${status}`, status })
+}
+
+function anotarNoEntregado(item) {
+  noEntregados.unshift({ ...item, en: new Date().toISOString() })
+  if (noEntregados.length > 50) noEntregados.pop()
+  console.error(`[bridge] NO ENTREGADO → ${JSON.stringify(item)}`)
 }
 
 function textoDe(msg) {
@@ -73,15 +118,31 @@ function apiEnvio() {
   // `wa` = estado REAL de la conexión (waConnected), no `!!sock`: el socket sigue existiendo tras un
   // device_removed → `!!sock` daba wa:true con la sesión muerta (falso positivo). El watchdog del
   // asistente lee esto para el heartbeat.
-  app.get('/salud', (_req, res) => res.json({ ok: true, wa: waConnected }))
+  // `wa` = socket conectado. `entregando` = además WhatsApp ACEPTA lo que mandamos
+  // (no hay envíos recientes sin acuse). Con la cuenta restringida (463) el socket
+  // sigue abierto pero nada llega: `wa:true` solo hacía que el CRM pintara el bot
+  // en verde mientras estaba mudo. (auditoría 2026-07-25)
+  app.get('/salud', (_req, res) => res.json({
+    ok: true,
+    wa: waConnected,
+    entregando: waConnected && noEntregados.length === 0,
+    no_entregados: noEntregados.length,
+    ultimo_fallo: noEntregados[0] || null,
+  }))
   app.post('/enviar', async (req, res) => {
     try {
       if (!sock) return res.status(503).json({ error: 'WhatsApp no conectado' })
       const { telefono, texto, documento_base64, documento_nombre, jid: jidRaw } = req.body
       // jidRaw = override para diagnóstico (ej. enviar a un @lid). Normal: teléfono → @s.whatsapp.net.
       const jid = jidRaw || `${String(telefono).replace(/\D/g, '')}@s.whatsapp.net`
-      await enviarA(jid, { texto, documento_base64, documento_nombre })
-      res.json({ ok: true })
+      const ack = await enviarA(jid, { texto, documento_base64, documento_nombre })
+      // 502 cuando WhatsApp NO aceptó el mensaje: así el llamador (scheduler/watcher)
+      // NO lo marca como enviado y puede reintentar. Antes siempre era 200 y las
+      // alarmas rechazadas por el 463 quedaban registradas como entregadas.
+      if (ack && ack.entregado === false) {
+        return res.status(502).json({ ok: false, entregado: false, error: ack.motivo })
+      }
+      res.json({ ok: true, entregado: true })
     } catch (e) {
       res.status(500).json({ error: e.message })
     }
@@ -131,13 +192,32 @@ async function iniciar() {
         .then(() => console.log('[bridge] QR PNG actualizado: qr/qr.png'))
         .catch((e) => console.error('[bridge] no pude escribir el PNG:', e.message))
     }
-    if (connection === 'open') { waConnected = true; console.log('[bridge] WhatsApp conectado.') }
+    if (connection === 'open') { waConnected = true; reintentos = 0; console.log('[bridge] WhatsApp conectado.') }
     if (connection === 'close') {
       waConnected = false
       const code = lastDisconnect?.error?.output?.statusCode
       const reconectar = code !== DisconnectReason.loggedOut
       console.log(`[bridge] conexión cerrada (${code}); ${reconectar ? 'reconectando…' : 'sesión cerrada'}`)
-      if (reconectar) iniciar()
+      if (reconectar) {
+        // Backoff: antes se re-entraba en seco desde el handler del socket viejo,
+        // así que una caída repetida martillaba fetchLatestBaileysVersion.
+        reintentos += 1
+        const espera = Math.min(30000, 1000 * 2 ** Math.min(reintentos, 5))
+        console.log(`[bridge] reintento ${reintentos} en ${espera} ms`)
+        setTimeout(() => { iniciar().catch((e) => console.error('[bridge] fallo al reconectar:', e.message)) }, espera)
+      } else {
+        // loggedOut: la sesión murió de verdad. Antes el proceso quedaba VIVO
+        // sirviendo Express, así que `restart: unless-stopped` nunca actuaba y ni
+        // un restart manual recuperaba (creds.registered seguía true → sin QR).
+        // Borramos las credenciales y salimos: Docker reinicia y pide pareo.
+        try {
+          fs.rmSync('/app/auth', { recursive: true, force: true })
+          console.error('[bridge] sesión cerrada por WhatsApp: credenciales borradas, saliendo para re-parear.')
+        } catch (e) {
+          console.error('[bridge] no pude borrar /app/auth:', e.message)
+        }
+        process.exit(1)
+      }
     }
   })
 
@@ -183,6 +263,7 @@ async function iniciar() {
     for (const u of updates) {
       if (u.update?.status !== undefined || u.update?.messageStubType !== undefined) {
         console.log(`[bridge] UPDATE id=${u.key?.id} fromMe=${u.key?.fromMe} status=${u.update?.status} stub=${u.update?.messageStubType ?? ''}`)
+        if (u.update?.status !== undefined) resolverAck(u.key?.id, u.update.status)
       }
     }
   })

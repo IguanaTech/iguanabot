@@ -19,8 +19,7 @@ import express from 'express'
 import pino from 'pino'
 import qrcode from 'qrcode-terminal'
 import QRImage from 'qrcode'
-
-const fs = require('fs')
+import fs from 'node:fs'
 const ASISTENTE_URL = process.env.ASISTENTE_URL || 'http://asistente:8000'
 const PORT = Number(process.env.BRIDGE_PORT || 3100)
 const logger = pino({ level: process.env.BRIDGE_LOG_LEVEL || 'warn' })

@@ -136,7 +136,10 @@ def preparar() -> None:
                     CREATE TABLE IF NOT EXISTS memoria (
                       id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
                       telefono     text NOT NULL,
-                      consorcio_id uuid,
+                      -- MISMA definición que db/001_schema.sql, FK incluida: dos declaraciones de
+                      -- la misma tabla que difieren terminan divergiendo. El CASCADE importa —
+                      -- si se da de baja un consorcio, sus recuerdos se van con él.
+                      consorcio_id uuid REFERENCES consorcios(id) ON DELETE CASCADE,
                       contenido    text NOT NULL,
                       embedding    vector({dim}),
                       modelo       text,

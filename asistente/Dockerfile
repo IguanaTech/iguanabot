@@ -22,6 +22,14 @@ RUN mkdir -p /voces \
     && curl -fsSL -o /voces/es_MX-claude-high.onnx.json \
        "https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_MX/claude/high/es_MX-claude-high.onnx.json"
 
+# Modelo de embeddings HORNEADO en la imagen (igual que la voz de Piper). Si se bajara en la
+# primera consulta, el primer mensaje tras cada deploy pagaría ~220 MB de descarga y, sin red
+# saliente, la memoria semántica quedaría apagada para siempre sin decir por qué.
+ENV FASTEMBED_CACHE_PATH=/modelos
+RUN mkdir -p /modelos && python -c "\
+from fastembed import TextEmbedding; \
+TextEmbedding('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"
+
 # El código del paquete se monta bajo /app/asistente (ver COPY). Se corre como módulo.
 COPY . /app/asistente
 

@@ -9,6 +9,9 @@ consorcios/usuarios eso es disco sin tope. Este job (1×/día):
      escribir, empieza un hilo nuevo (pierde el contexto viejo, que ya no importaba).
   2. Purga la `bitacora` más vieja que BITACORA_RETENCION_DIAS.
   3. Purga los `recordatorio_diario` viejos (el dedup de hoy no necesita el histórico).
+  4. Purga los RECUERDOS semánticos más viejos que MEMORIA_RETENCION_DIAS. Plazo mucho más largo
+     que el del hilo (son justamente las cosas que deben sobrevivirlo), pero no eterno: una
+     preferencia de hace un año probablemente ya no aplica y nadie se acuerda de borrarla.
 
 Idempotente y best-effort: nunca rompe el arranque ni el resto del bot.
 """
@@ -43,8 +46,20 @@ def limpiar() -> None:
                 cur.execute(
                     "DELETE FROM recordatorio_diario WHERE dia < (now() - make_interval(days => 7))::date"
                 )
+                # 4. Recuerdos semánticos vencidos. `to_regclass` porque la tabla la provisiona el
+                #    módulo de memoria al arrancar: si la memoria está apagada, puede no existir y
+                #    esto NO debe tumbar el resto de la retención.
+                cur.execute("SELECT to_regclass('public.memoria')")
+                recuerdos_borrados = 0
+                if cur.fetchone()[0] is not None:
+                    cur.execute(
+                        "DELETE FROM memoria WHERE creado_en < now() - make_interval(days => %s)",
+                        (config.MEMORIA_RETENCION_DIAS,),
+                    )
+                    recuerdos_borrados = cur.rowcount or 0
             conn.commit()
-        print(f"[retencion] hilos inactivos borrados: {len(viejos)} · bitácora purgada: {bitacora_borradas} filas.")
+        print(f"[retencion] hilos inactivos borrados: {len(viejos)} · bitácora purgada: "
+              f"{bitacora_borradas} filas · recuerdos vencidos: {recuerdos_borrados}.")
     except Exception as ex:  # noqa: BLE001
         print(f"[retencion] (aviso) falló, se reintenta mañana: {ex}")
 

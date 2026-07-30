@@ -25,7 +25,7 @@ from typing import Any
 import httpx
 from langchain_core.tools import StructuredTool
 
-from . import auth, reportes
+from . import auth, memoria, reportes
 from .registry import Consorcio
 
 
@@ -894,7 +894,43 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
             params["banca_id"] = b["id"]
         return _resultado_accion(_accion(consorcio, "cargar-egreso", telefono, params, confirmado))
 
+    # ── Memoria semántica (hechos durables de ESTA persona) ──────────────────────
+    # Explícita a propósito: el modelo decide QUÉ vale la pena recordar y lo dice. La
+    # alternativa —extraer hechos automáticamente de cada mensaje— llena la memoria de datos
+    # operativos que envejecen mal y después el bot los AFIRMA como si fueran de hoy.
+    def recordar_dato(hecho: str) -> str:
+        """Guarda un dato DURABLE de la persona con la que hablas, para acordarte en futuras
+        conversaciones (semanas o meses después). Úsalo cuando te digan algo estable sobre ellos
+        o su operación: cuál es su banca, cómo prefiere los reportes, quién es quién para él,
+        cómo llama a las cosas. También si te piden explícitamente "acuérdate de...".
+
+        NUNCA guardes CIFRAS DE LA OPERACIÓN (cuánto hay, cuánto vendió, cuánto se pagó): esos
+        números cambian todos los días y guardarlos hace que más adelante afirmes algo falso.
+        Los números se consultan con las otras herramientas, siempre."""
+        ok = memoria.recordar(telefono, consorcio.id, hecho)
+        return "Anotado." if ok else "No pude guardarlo (la memoria no está disponible)."
+
+    def que_recuerdas() -> str:
+        """Lista lo que tienes anotado de esta persona. Úsalo si pregunta qué recuerdas de él,
+        o antes de borrar algo, para saber qué hay."""
+        items = memoria.listar(telefono, consorcio.id)
+        if not items:
+            return "No tengo nada anotado de esta persona."
+        return "\n".join(f"- {c}" for c in items)
+
+    def olvidar_dato(texto: str) -> str:
+        """Borra lo anotado que contenga ese texto. Úsalo cuando te pidan que olvides algo o
+        cuando un dato que recuerdas ya no sea cierto (y en ese caso, vuelve a guardarlo
+        corregido con recordar_dato)."""
+        n = memoria.olvidar(telefono, consorcio.id, texto)
+        if n == 0:
+            return "No encontré nada anotado con ese texto."
+        return f"Listo, borré {n} nota(s)."
+
     todas = [
+        StructuredTool.from_function(recordar_dato),
+        StructuredTool.from_function(que_recuerdas),
+        StructuredTool.from_function(olvidar_dato),
         # Acciones de escritura (B27) — el back gatea por el permiso de quien escribe.
         StructuredTool.from_function(bloquear_numero),
         StructuredTool.from_function(gestionar_alerta),
@@ -942,6 +978,9 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
     # Usuario ACOTADO (encargado): SOLO herramientas por-banca, ya restringidas a SUS bancas.
     # Se excluyen las de consorcio completo, RRHH-personal, dinero agregado y ganancia de otros.
     seguras = {"reporte_ventas", "reporte_ganancia", "numeros_top", "sla_arreglos",
+               # La memoria es POR PERSONA: un encargado acotado la necesita igual, y no puede
+               # leer la de nadie más (el filtro es telefono + consorcio, en el WHERE).
+               "recordar_dato", "que_recuerdas", "olvidar_dato",
                "tareas_mensajero", "ubicacion_mensajero", "catalogo",
                # Acciones de escritura (B27): se ofrecen a todos; el BACK re-chequea el permiso del
                # empleado que escribe (un encargado sin el permiso recibe 403, no las ejecuta).

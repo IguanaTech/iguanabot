@@ -42,7 +42,12 @@ CREATE TABLE memoria (
   telefono       text NOT NULL,                 -- de quién es la memoria
   consorcio_id   uuid REFERENCES consorcios(id) ON DELETE CASCADE,
   contenido      text NOT NULL,                 -- el hecho/nota, en texto
-  embedding      vector(1536),                  -- ajustar dim al modelo de embeddings elegido
+  -- 384 = dimensión del modelo LOCAL en uso (paraphrase-multilingual-MiniLM-L12-v2). Antes decía
+  -- 1536 con un TODO: ese número era de un proveedor externo que nunca se usó. `memoria.preparar()`
+  -- vuelve a chequearlo al arrancar preguntándole la dimensión al modelo, así que un cambio de
+  -- modelo no exige tocar este archivo (que además sólo corre al crear la base de cero).
+  embedding      vector(384),
+  modelo         text,                          -- qué vectorizador la produjo (ver memoria._firma_modelo)
   creado_en      timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_memoria_telefono ON memoria(telefono);

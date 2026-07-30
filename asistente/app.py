@@ -8,6 +8,7 @@ import psycopg
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from . import memoria
 from .config import config
 from .graph import responder, preparar_memoria
 from .identity import BackInalcanzable, consorcio_de, resolver, sincronizar_todos
@@ -24,6 +25,15 @@ def _startup() -> None:
         preparar_memoria()
     except Exception as ex:  # noqa: BLE001
         print(f"[startup] memoria avisó: {ex}")
+    # Memoria SEMÁNTICA (hechos durables por persona): provisiona la tabla con la dimensión del
+    # modelo vigente y calienta el modelo acá, no en la primera consulta — cargar el ONNX tarda y
+    # el primer mensaje del día no tiene por qué pagarlo. Si algo falla, la memoria queda apagada
+    # y el bot contesta igual.
+    if config.MEMORIA_SEMANTICA:
+        try:
+            memoria.preparar()
+        except Exception as ex:  # noqa: BLE001
+            print(f"[startup] memoria semántica avisó: {ex}")
     # Sincroniza el directorio desde los backs registrados (best-effort).
     try:
         print(f"[startup] roster: {sincronizar_todos()}")

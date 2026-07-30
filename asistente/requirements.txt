@@ -13,6 +13,14 @@ langgraph-checkpoint-postgres>=2.0
 langchain-anthropic>=0.3    # proveedor: anthropic (Claude Haiku)
 langchain-openai>=0.2       # proveedor: deepseek (API OpenAI-compatible) — para probar
 
+# Memoria semántica: embeddings LOCALES (ONNX, sin torch y sin proveedor externo). Anthropic no
+# ofrece embeddings, y sumar OpenAI sólo para vectorizar frases acoplaría el bot a otra cuenta.
+# PINEADO a propósito: los embeddings guardados sólo son comparables con los que produce el MISMO
+# modelo y el MISMO pooling. fastembed 0.8 cambió MiniLM de CLS a mean pooling — un salto de versión
+# sin pin degradaría la búsqueda EN SILENCIO contra todo lo ya guardado. La columna `modelo` de la
+# tabla es la segunda red: si no coincide, esos recuerdos se ignoran en vez de mentir.
+fastembed>=0.8,<0.9
+
 # Voz: STT (Whisper) + TTS (Piper self-host, offline). polly/elevenlabs quedan opcionales.
 faster-whisper>=1.0
 piper-tts>=1.5

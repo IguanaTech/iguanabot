@@ -31,6 +31,19 @@ class Config:
     CHECKPOINT_RETENCION_DIAS = int(os.getenv("CHECKPOINT_RETENCION_DIAS", "30"))
     BITACORA_RETENCION_DIAS = int(os.getenv("BITACORA_RETENCION_DIAS", "90"))
 
+    # Memoria SEMÁNTICA (hechos durables por persona, recuperados por parecido). El modelo de
+    # embeddings corre LOCAL —igual que Whisper y Piper— para no sumar otro proveedor ni otra clave
+    # sólo por vectorizar frases; Anthropic no ofrece embeddings. MiniLM multilingüe: 384 dims,
+    # 220 MB, entiende español. Cambiarlo por otro de fastembed re-provisiona la tabla con la
+    # dimensión nueva (memoria.preparar() la pregunta al modelo, no la asume).
+    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL",
+                                "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+    MEMORIA_SEMANTICA = os.getenv("MEMORIA_SEMANTICA", "true").lower() == "true"
+    # Retención de los recuerdos. Más largo que el hilo de conversación (30 días) porque son
+    # justamente las cosas que deben sobrevivir al hilo; pero no eternas: una preferencia de hace
+    # un año probablemente ya no aplica y nadie se acuerda de borrarla.
+    MEMORIA_RETENCION_DIAS = int(os.getenv("MEMORIA_RETENCION_DIAS", "365"))
+
     DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
     DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")  # V3, soporta tool-calling

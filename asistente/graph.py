@@ -13,6 +13,7 @@ from langchain_core.messages import trim_messages
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
 
+from . import memoria
 from .config import config
 from .identity import Identidad
 from .registry import Consorcio
@@ -23,6 +24,7 @@ Eres el asistente de operaciones de IguanaSuite para el consorcio "{consorcio}".
 Le hablas a {nombre} (rol: {rol}). Hoy es {fecha_hoy} (zona horaria de RD).
 
 ALCANCE DE {nombre}: {alcance}
+{recuerdos}
 
 TONO — importante:
 - Español dominicano con tuteo, SIEMPRE (nunca voseo argentino: nada de "vos tenés", "fijate").
@@ -205,6 +207,19 @@ def responder(identidad: Identidad, consorcio: Consorcio, texto: str) -> str:
             f"(o una banca ajena), acláralo y limítate a lo suyo. Las herramientas ya están acotadas a "
             f"su alcance: si una devuelve que algo está fuera de su alcance, respétalo."
         )
+    # MEMORIA SEMÁNTICA: los hechos durables de esta persona que se parecen a lo que acaba de
+    # preguntar. Van al prompt como NOTAS, nunca como datos de hoy: son preferencias y contexto
+    # ("mi banca es La Suerte"), y los números siempre salen de las herramientas. Si la memoria
+    # no está disponible, `recuperar` devuelve vacío y el bot contesta igual (fail-open).
+    notas = ""
+    if config.MEMORIA_SEMANTICA:
+        recordados = memoria.recuperar(identidad.telefono, consorcio.id, texto)
+        if recordados:
+            notas = ("\nNOTAS QUE TIENES DE " + (identidad.nombre or "esta persona").upper()
+                     + " (de conversaciones anteriores; son contexto y preferencias, NO datos de "
+                       "hoy — los números se consultan siempre con las herramientas):\n"
+                     + "\n".join(f"- {c}" for c in recordados) + "\n")
+
     system = SYSTEM_TMPL.format(
         consorcio=consorcio.nombre,
         nombre=identidad.nombre or "el usuario",
@@ -213,6 +228,7 @@ def responder(identidad: Identidad, consorcio: Consorcio, texto: str) -> str:
         # LLM debe recibir el día RD real, no el UTC — si no, "ayer" se corría cerca de medianoche).
         fecha_hoy=datetime.now(timezone(timedelta(hours=-4))).date().isoformat(),
         alcance=alcance,
+        recuerdos=notas,
     )
     agente = create_react_agent(
         _modelo(),

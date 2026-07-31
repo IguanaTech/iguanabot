@@ -120,11 +120,16 @@ def resumen_delegado(dia: date | None = None) -> dict:
         full = consorcio_por_id(c.id)
         if not full:
             continue
+        # NO se usa `_safe` acá: ése se traga el error y devuelve {}, y un {} se leería como
+        # "no se aprobó nada". En un resumen de rendición de cuentas eso es la peor falla posible:
+        # el día que el endpoint se rompa, el silencio diría "nadie actuó en tu nombre" cuando en
+        # realidad nadie miró. Un fallo de LECTURA no es lo mismo que NADA QUE CONTAR.
         try:
             params = {"dia": dia.isoformat()} if dia else None
-            r = reportes._safe(full, "/api/asistente/aprobaciones", params) or {}
+            r = reportes._get(full, "/api/crm/asistente/aprobaciones", params) or {}
         except Exception as ex:  # noqa: BLE001
-            print(f"[delegado] no pude leer las aprobaciones de {c.nombre}: {ex}")
+            print(f"[delegado] NO PUDE LEER las aprobaciones de {c.nombre}: {ex}")
+            resultado[c.nombre] = f"ERROR de lectura: {ex}"
             continue
 
         filas = [x for x in (r.get("data") or []) if not x.get("revertido_en")]

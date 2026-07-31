@@ -400,7 +400,10 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
         alertas = (op.get("alertas") or {}) if isinstance(op, dict) else {}
 
         if _quiere("gastos"):
-            gs = alertas.get("gastos_mayores_pendientes") or []
+            # El bot lee con SU token de servicio, que es global: el recorte por banca lo hace
+            # ACÁ. Sin esto un encargado acotado vería los pendientes de todo el consorcio.
+            gs = [g for g in (alertas.get("gastos_mayores_pendientes") or [])
+                  if _banca_permitida(g.get("banca_id"))]
             if gs:
                 partes.append("GASTOS DE CAJA CHICA POR APROBAR:\n" + "\n".join(
                     f"  · {g.get('banca_nombre') or g.get('estacion_nombre') or 'banca'} "
@@ -410,7 +413,11 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
             elif q == "gastos":
                 partes.append("Sin gastos de caja chica esperando aprobación.")
 
-        if _quiere("entregas"):
+        # Las entregas de efectivo NO son "sus bancas": van por CENTRAL, y ser encargado de una
+        # central es otra asignación. Además el listado saldría con el token global del bot —el
+        # back acota al CONFIRMAR (gateEncargado), no al listar— así que mostrarlas sería mostrar
+        # las de todo el mundo. Para un acotado, esta sección no existe.
+        if _quiere("entregas") and es_global:
             try:
                 pend = _get(consorcio, "/api/efectivo-central/pendientes") or {}
                 filas = pend.get("data", pend) if isinstance(pend, dict) else pend
@@ -444,7 +451,8 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
         # Los pedidos de ANULAR van ANTES que el resto: son los únicos con hora límite dura.
         # Cuando la lotería cierra ya no se puede, ni el admin, y el ticket queda válido.
         if _quiere("solicitudes") or _quiere("anulaciones"):
-            an = alertas.get("anulaciones_por_vencer") or []
+            an = [x for x in (alertas.get("anulaciones_por_vencer") or [])
+                  if _banca_permitida(x.get("banca_id"))]
             if an:
                 lineas = []
                 for x in an:
@@ -459,7 +467,8 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
                 partes.append("Sin pedidos de anulación por vencer.")
 
         if _quiere("solicitudes"):
-            ss = alertas.get("solicitudes_abiertas") or []
+            ss = [x for x in (alertas.get("solicitudes_abiertas") or [])
+                  if _banca_permitida(x.get("banca_id"))]
             if ss:
                 partes.append("SOLICITUDES ABIERTAS:\n" + "\n".join(
                     f"  · {s.get('banca_nombre') or 'banca'} pide {s.get('tipo') or ''} "
@@ -469,8 +478,19 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
                 partes.append("Sin solicitudes abiertas.")
 
         if _quiere("alertas"):
-            otras = {k: v for k, v in alertas.items()
-                     if v and k not in ("gastos_mayores_pendientes", "solicitudes_abiertas")}
+            otras = {}
+            for k, v in alertas.items():
+                if not v or k in ("gastos_mayores_pendientes", "solicitudes_abiertas",
+                                  "anulaciones_por_vencer"):
+                    continue
+                # Las que traen banca se recortan; las que no (pánico, procesos) sólo se le
+                # muestran al global — no son "sus bancas" y no tiene con qué acotarlas.
+                if isinstance(v, list) and v and isinstance(v[0], dict) and "banca_id" in v[0]:
+                    v = [i for i in v if _banca_permitida(i.get("banca_id"))]
+                elif not es_global:
+                    continue
+                if v:
+                    otras[k] = v
             if otras:
                 partes.append("OTRAS ALERTAS DEL PANEL:\n" + "\n".join(
                     f"  · {k}: {len(v)} — ids: {', '.join(str(i.get('id')) for i in v[:5] if isinstance(i, dict))}"
@@ -1271,7 +1291,23 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
                # `_exigir_banca` y por el scope que aplica el back.
                "panorama_banca", "buscar_ticket",
                "tareas_mensajero", "ubicacion_mensajero", "catalogo",
+               # Lo que está esperando una decisión, YA RECORTADO a sus bancas dentro de la propia
+               # herramienta: el bot lee con su token global, así que el filtro lo hace ella.
+               # Sin ese recorte, esto le mostraría los pendientes de todo el consorcio.
+               "pendientes_por_decidir",
                # Acciones de escritura (B27): se ofrecen a todos; el BACK re-chequea el permiso del
                # empleado que escribe (un encargado sin el permiso recibe 403, no las ejecuta).
-               "bloquear_numero", "gestionar_alerta", "asignar_tarea", "aprobar_solicitud", "cargar_egreso"}
+               "bloquear_numero", "gestionar_alerta", "asignar_tarea", "aprobar_solicitud", "cargar_egreso",
+               # Decisión de Eduardo (2026-07-31): «los encargados deben poder manejar sus
+               # bancas/grupos por el bot también».
+               #   · caja chica — hoy un encargado NO tiene CAJA_CHICA_MOTIVOS_GESTIONAR, así que
+               #     el back le responde 403 y la herramienta no hace nada. Se ofrece igual para
+               #     que el día que se le conceda el permiso funcione sin tocar el bot; el alcance
+               #     por banca ya quedó puesto del lado del back (ver E-29).
+               #   · pánico — es gente en la calle, no una banca. Se ofrece porque un encargado que
+               #     ve el SOS de un mensajero que le sirve tiene que poder reconocerlo.
+               "aprobar_gasto_caja_chica", "atender_panico"}
+    # `confirmar_entrega_efectivo` NO entra: las entregas van por CENTRAL, y ser encargado de una
+    # central es otra asignación distinta de tener bancas a cargo. Quien la tenga la usa desde el
+    # CRM, donde el back sí lo acota al confirmar.
     return [t for t in todas if t.name in seguras]

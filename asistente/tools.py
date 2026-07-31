@@ -1018,10 +1018,22 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
         cod = re.sub(r"[^A-Za-z0-9]", "", codigo or "").upper()
         if len(cod) < 6:
             return "Ese no parece un código de ticket. Es el serial impreso en el papel."
+        # "No existe" y "no pude preguntar" NO son lo mismo, y acá la diferencia vale plata: si el
+        # back está caído o la ruta cambió, decir «no encontré ningún ticket» es afirmar que un
+        # ticket posiblemente GANADOR no existe. Eduardo ya se comió una versión de esto —el bot le
+        # dijo que su banca no tenía premios del mes y el ticket del 28 sí era ganador—. Sólo el 404
+        # significa "no existe"; cualquier otra falla se dice como falla.
         try:
             t = _get(consorcio, f"/api/crm/tickets/por-codigo/{cod}") or {}
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return f"No encontré ningún ticket con el código {cod}."
+            return (f"No pude consultar el ticket {cod} (el sistema respondió "
+                    f"{e.response.status_code}). NO quiere decir que no exista — vuelve a "
+                    f"preguntarme en un momento.")
         except Exception:  # noqa: BLE001
-            return f"No encontré ningún ticket con el código {cod}."
+            return (f"No pude consultar el ticket {cod}: no logré comunicarme con el sistema. "
+                    f"NO quiere decir que no exista.")
         if not t or not t.get("id"):
             return f"No encontré ningún ticket con el código {cod}."
 

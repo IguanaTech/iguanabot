@@ -6,7 +6,7 @@ de solo-lectura, poder ver ventas/balance (REPORTES_VER_VENTAS, BALANCE_VER) par
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 import httpx
@@ -67,6 +67,13 @@ class Reporte:
     consorcio: str
     fecha: str
     datos: dict
+    # Qué bloques NO se pudieron leer. Sin esta lista, un endpoint caído es
+    # indistinguible de un día sin movimiento — ver `hubo_movimiento`.
+    fallidos: list[str] = field(default_factory=list)
+
+
+# Los bloques sin los cuales NO se puede afirmar que el día estuvo quieto.
+CLAVES_DE_MOVIMIENTO = ("ventas", "ganadores")
 
 
 def hubo_movimiento(rep: "Reporte") -> bool:
@@ -79,7 +86,16 @@ def hubo_movimiento(rep: "Reporte") -> bool:
 
     "Algo que contar" = se vendió, se pagó o quedó pendiente un premio. Si los tres están en cero,
     la banca no operó ese día y no hay reporte que mandar.
+
+    PERO el silencio sólo es información si los números se pudieron LEER. Si `ventas` o `ganadores`
+    fallaron, sus resúmenes vienen vacíos, los contadores dan cero y esta función concluía "no hubo
+    movimiento" — o sea que un back caído se traducía en un día de silencio y Eduardo entendía que
+    la operación estuvo quieta. Es el mismo modo de fallar que el `except: pass` del disponible y
+    que el «no encontré ese ticket» cuando el que no responde es el sistema: un error mudo se lee
+    como un dato. Si no se pudo mirar, se manda igual, y el texto lo dice.
     """
+    if any(rep.datos.get(k) is None for k in CLAVES_DE_MOVIMIENTO):
+        return True
     d = rep.datos or {}
     def _n(bloque, *claves):
         r = ((d.get(bloque) or {}).get("resumen") or {})
@@ -109,7 +125,10 @@ def datos_dia(consorcio: Consorcio, dia: date | None = None) -> Reporte:
         "riesgo":     _safe(consorcio, "/api/crm/riesgo/cobertura"),
         "fraude":     _safe(consorcio, "/api/crm/fraude/score"),
     }
-    return Reporte(consorcio=consorcio.nombre, fecha=d, datos=datos)
+    # Un bloque que no se pudo leer se OMITE del texto (porque `_linea` descarta los None), y
+    # omitido es indistinguible de "ese número no aplica hoy". Se anota para poder decirlo.
+    return Reporte(consorcio=consorcio.nombre, fecha=d, datos=datos,
+                   fallidos=[k for k, v in datos.items() if v is None])
 
 
 # ── Render ────────────────────────────────────────────────────────────────────
@@ -166,6 +185,19 @@ def texto(rep: Reporte) -> str:
     ]:
         if l:
             lineas.append(l)
+
+    # Lo que no se pudo leer se dice. Una línea que falta se lee como "ese número no aplica hoy";
+    # peor todavía, un reporte con la mitad de los números se lee como el reporte completo, y con
+    # eso se toman decisiones de plata.
+    if rep.fallidos:
+        NOMBRES = {
+            "operativo": "estado operativo", "ventas": "ventas", "pnl": "ganancia",
+            "ganadores": "premios", "riesgo": "cobertura", "fraude": "señales de fraude",
+        }
+        faltan = ", ".join(NOMBRES.get(k, k) for k in rep.fallidos)
+        lineas.append("")
+        lineas.append(f"⚠️ No pude leer: {faltan}. Lo que falta arriba NO es cero — es que no lo vi.")
+
     lineas.append("")
     lineas.append("_Reporte generado por el asistente. Solo lectura._")
     return "\n".join(lineas)

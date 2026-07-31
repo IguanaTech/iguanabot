@@ -718,8 +718,10 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
     def tareas_mensajero(mensajero: str = "", banca: str = "", incluir_cerradas: bool = False) -> str:
         """Estado de las TAREAS/ENCARGOS del despacho: qué se está llevando, qué está pendiente, qué ya
         se entregó. Úsalo para '¿ya Juancito entregó tal encargo?', '¿qué tiene pendiente el mensajero
-        X?', '¿ya se despachó a la banca Y?'. Filtra por mensajero y/o banca (por nombre). Por defecto
-        solo las vivas (pendientes / en camino); incluir_cerradas=true para ver las ya entregadas."""
+        X?', '¿ya se despachó a la banca Y?', '¿qué llevó/hizo Juancito?'. Cada línea dice QUÉ era el
+        viaje: tipo, dirección (retiro/entrega), MONTO que llevaba y, si lo declarado y lo recibido no
+        coincidieron, los dos números. Filtra por mensajero y/o banca (por nombre). Por defecto solo
+        las vivas (pendientes / en camino); incluir_cerradas=true para ver las ya entregadas."""
         params: dict = {"limit": 200}
         if not incluir_cerradas:
             params["activos"] = "true"
@@ -756,7 +758,26 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
                 extra = f", salió {_hace(t.get('salida_en'))}"
             elif t.get("estado") == "cerrado" and t.get("recibo_en"):
                 extra = f", entregado {_hace(t.get('recibo_en'))}"
-            return f"{t.get('tipo')} → {bn}: {est} ({who}{extra})"
+
+            # QUÉ LLEVABA, no sólo que hubo un viaje. La línea decía "arreglo → banca: cerrado" y
+            # nada más: preguntar "¿qué llevó Juancito?" no se podía responder, aunque el monto
+            # viene en la misma fila de /api/tareas. Sin esto, un retiro de RD$200 y uno de
+            # RD$200.000 se leen igual.
+            dire = t.get("direccion")
+            plata = ""
+            salida, real = t.get("monto_salida"), t.get("monto_real")
+            if real not in (None, "") and str(real) != str(salida):
+                # Lo declarado y lo recibido NO coinciden: eso es lo primero que hay que ver.
+                plata = f", declarado {_rd(salida)} pero llegó {_rd(real)}"
+                if t.get("discrepancia_estado") and t.get("discrepancia_estado") != "ninguna":
+                    plata += f" ({t.get('discrepancia_estado')})"
+            elif salida not in (None, "", 0, "0"):
+                plata = f", {_rd(salida)}"
+            elif t.get("tipo") == "material":
+                plata = ", papelería/material"
+
+            que = f"{t.get('tipo')}{f' ({dire})' if dire else ''}"
+            return f"{que} → {bn}: {est}{plata} ({who}{extra})"
 
         cabeza = f"Tareas {vivas}{' '.join(desc)}".strip()
         return f"{cabeza} — {len(tareas)}: " + "; ".join(_linea(t) for t in tareas[:12])
@@ -927,7 +948,100 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
             return "No encontré nada anotado con ese texto."
         return f"Listo, borré {n} nota(s)."
 
+    def panorama_banca(banca: str = "", dias: int = 30) -> str:
+        """LA FOTO COMPLETA de una banca en un período: ventas, premios PAGADOS, premios POR PAGAR,
+        efectivo disponible para retirar y gastos. Úsalo SIEMPRE que pidan "el detalle de la banca X",
+        "cómo va la banca X", "qué vendió y qué sacaron en X", "el panorama de X" — o cualquier
+        pregunta que abarque más de una cosa sobre una misma banca.
+
+        Existe para que no haya que acordarse de cruzar cuatro herramientas: las cruza esta. Si
+        contestas con una sola de ellas, vas a dar una foto incompleta de dinero.
+        `dias` = ventana hacia atrás desde hoy (30 = el mes corrido)."""
+        b = None
+        if not es_global:
+            b, err = _exigir_banca(banca)
+            if err:
+                return err
+        elif banca:
+            b, disp = _resolver(consorcio, "/api/bancas", banca)
+            if not b:
+                return f"No encontré una banca llamada '{banca}'. Bancas: {', '.join(disp[:30]) or '—'}."
+        if not b:
+            return "¿De cuál banca? Necesito el nombre para darte la foto completa."
+
+        hasta = _hoy_rd()
+        desde = hasta - timedelta(days=max(1, dias) - 1)
+        rango = {"desde": desde.isoformat(), "hasta": hasta.isoformat(), "banca_id": b["id"]}
+        partes = [f"Banca {b.get('nombre')} · {desde.isoformat()} a {hasta.isoformat()}:"]
+
+        # Ventas
+        try:
+            v = (_get(consorcio, "/api/reportes/ventas", rango).get("resumen") or {})
+            partes.append(f"VENDIÓ {_rd(v.get('total_vendido') or v.get('total') or 0)} "
+                          f"en {v.get('total_tickets') or v.get('tickets') or 0} tickets.")
+        except Exception:  # noqa: BLE001
+            partes.append("VENTAS: no pude consultarlas.")
+
+        # Premios — los DOS números, siempre. Un premio pendiente es plata que va a salir: decir
+        # sólo "pagado: 0" hace creer que la banca está limpia cuando tiene un ganador esperando.
+        try:
+            g = (_get(consorcio, "/api/reportes/ganadores", rango).get("resumen") or {})
+            total = int(g.get("total_premios") or 0)
+            por_pagar = int(g.get("premios_por_pagar") or 0)
+            pagado = max(0, total - por_pagar)
+            partes.append(
+                f"PREMIOS: pagados {_rd(pagado)} ({g.get('total_pagados', 0)} tickets); "
+                f"POR PAGAR {_rd(por_pagar)} ({g.get('total_pendientes', 0)} tickets).")
+        except Exception:  # noqa: BLE001
+            partes.append("PREMIOS: no pude consultarlos.")
+
+        # Efectivo disponible (hoy, no del período: es un saldo, no un acumulado).
+        try:
+            dic = _get(consorcio, "/api/crm/dinero/disponible") or {}
+            for x in (dic.get("por_banca") or []):
+                if str(x.get("banca_id")) == str(b["id"]):
+                    partes.append(f"DISPONIBLE PARA RETIRAR hoy: {_rd(x.get('disponible'))}.")
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+
+        return " ".join(partes)
+
+    def buscar_ticket(codigo: str) -> str:
+        """Busca UN ticket por su código impreso (el serial del papel, ej. BAVHHJW76SQW o
+        BAVH-HJW7-6SQW) y dice en qué estado está: si ganó, cuánto, si ya se pagó, de qué banca es.
+        Úsalo cuando te den un código de ticket y pregunten cualquier cosa sobre él."""
+        cod = re.sub(r"[^A-Za-z0-9]", "", codigo or "").upper()
+        if len(cod) < 6:
+            return "Ese no parece un código de ticket. Es el serial impreso en el papel."
+        try:
+            t = _get(consorcio, f"/api/crm/tickets/por-codigo/{cod}") or {}
+        except Exception:  # noqa: BLE001
+            return f"No encontré ningún ticket con el código {cod}."
+        if not t or not t.get("id"):
+            return f"No encontré ningún ticket con el código {cod}."
+
+        estado = str(t.get("estado") or "")
+        legible = {
+            "ganador_pendiente": "GANADOR, todavía SIN COBRAR",
+            "ganador_pagado": "GANADOR, ya pagado",
+            "expirado": "ganador VENCIDO (se pasó del plazo para cobrarlo)",
+            "anulado": "anulado",
+            "activo": "sin premio (no salió ganador)",
+        }.get(estado, estado)
+        premio = t.get("premio_total") or t.get("premio") or 0
+        detalle = [f"Ticket {cod}: {legible}."]
+        if int(premio or 0) > 0:
+            detalle.append(f"Premio {_rd(premio)}.")
+        if t.get("vendido_en") or t.get("creado_en"):
+            detalle.append(f"Vendido {str(t.get('vendido_en') or t.get('creado_en'))[:16]}.")
+        if t.get("pagado_en"):
+            detalle.append(f"Pagado {str(t.get('pagado_en'))[:16]}.")
+        return " ".join(detalle)
+
     todas = [
+        StructuredTool.from_function(panorama_banca),
+        StructuredTool.from_function(buscar_ticket),
         StructuredTool.from_function(recordar_dato),
         StructuredTool.from_function(que_recuerdas),
         StructuredTool.from_function(olvidar_dato),
@@ -981,6 +1095,9 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
                # La memoria es POR PERSONA: un encargado acotado la necesita igual, y no puede
                # leer la de nadie más (el filtro es telefono + consorcio, en el WHERE).
                "recordar_dato", "que_recuerdas", "olvidar_dato",
+               # El panorama y la búsqueda de ticket ya vienen acotados a SUS bancas por
+               # `_exigir_banca` y por el scope que aplica el back.
+               "panorama_banca", "buscar_ticket",
                "tareas_mensajero", "ubicacion_mensajero", "catalogo",
                # Acciones de escritura (B27): se ofrecen a todos; el BACK re-chequea el permiso del
                # empleado que escribe (un encargado sin el permiso recibe 403, no las ejecuta).

@@ -81,6 +81,14 @@ def _enviar_a_consorcio(full, c_id: str, dia: date, preliminar: bool) -> int:
     """Arma y manda el reporte del `dia` a los destinatarios del consorcio. Devuelve cuántos salieron.
     `preliminar=True` antepone un aviso (el día aún no cerró formalmente)."""
     rep = reportes.datos_dia(full, dia)
+
+    # Si el día no tuvo movimiento, no se manda nada. Ver `reportes.hubo_movimiento`: un reporte
+    # que a veces dice "no pasó nada" hace que dejen de abrirlo, y entonces el que sí importa
+    # tampoco se abre.
+    if not reportes.hubo_movimiento(rep):
+        print(f"[cierre] {full.nombre} {dia}: sin movimiento, no se manda reporte.")
+        return 0
+
     texto = reportes.texto(rep)
     if preliminar:
         texto = ("⚠ *Reporte preliminar* — el día aún no cerró formalmente en el sistema "
@@ -94,6 +102,64 @@ def _enviar_a_consorcio(full, c_id: str, dia: date, preliminar: bool) -> int:
         except Exception as ex:  # noqa: BLE001 — un destinatario que falla no frena a los demás
             print(f"[cierre] fallo enviando a {tel}: {ex}")
     return enviados
+
+
+def resumen_delegado(dia: date | None = None) -> dict:
+    """Manda, al cierre, lo que el bot aprobó SIN preguntar (back mig 221).
+
+    Va por su propio camino y no colgado del reporte de cierre a propósito: ese reporte hoy está
+    apagado (`REPORTE_EOD_AUTO=false`), así que colgarlo de ahí sería construir algo que nunca
+    llega. Y son cosas distintas — uno es cómo fue el negocio, éste es qué se hizo en tu nombre
+    sin consultarte.
+
+    MISMA REGLA: si el bot no aprobó nada por su cuenta, NO se manda. El silencio significa que
+    nadie actuó en tu nombre, que es justo lo que uno quiere saber sin tener que leer.
+    """
+    resultado = {}
+    for c in listar_consorcios():
+        full = consorcio_por_id(c.id)
+        if not full:
+            continue
+        try:
+            params = {"dia": dia.isoformat()} if dia else None
+            r = reportes._safe(full, "/api/asistente/aprobaciones", params) or {}
+        except Exception as ex:  # noqa: BLE001
+            print(f"[delegado] no pude leer las aprobaciones de {c.nombre}: {ex}")
+            continue
+
+        filas = [x for x in (r.get("data") or []) if not x.get("revertido_en")]
+        if not filas:
+            resultado[c.nombre] = "sin aprobaciones automáticas"
+            continue
+
+        res = r.get("resumen") or {}
+        lineas = [f"🤖 *Aprobado sin preguntarte hoy* — {len(filas)} operación(es)"]
+        if res.get("monto_total") and int(res["monto_total"]) > 0:
+            lineas.append(f"Total: RD${int(res['monto_total']):,}".replace(",", "."))
+        lineas.append("")
+        for x in filas[:20]:
+            hora = str(x.get("creado_en") or "")[11:16]
+            monto = f" · RD${int(x['monto']):,}".replace(",", ".") if x.get("monto") else ""
+            quien = x.get("empleado_nombre") or "—"
+            banca = f" · {x['banca_nombre']}" if x.get("banca_nombre") else ""
+            lineas.append(f"· {hora} {x.get('accion')}{monto} — {quien}{banca}")
+        if len(filas) > 20:
+            lineas.append(f"…y {len(filas) - 20} más.")
+        if res.get("revertidas"):
+            lineas.append(f"\n({res['revertidas']} ya revertida(s))")
+        lineas.append("\nSi algo no cuadra, se revierte desde el CRM en "
+                      "Asistente IA → Aprobación delegada.")
+        texto = "\n".join(lineas)
+
+        enviados = 0
+        for tel in reportes.destinatarios(c.id):
+            try:
+                enviar_por_puente(tel, texto, None, None)
+                enviados += 1
+            except Exception as ex:  # noqa: BLE001
+                print(f"[delegado] fallo enviando a {tel}: {ex}")
+        resultado[c.nombre] = f"{len(filas)} aprobaciones → {enviados} envío(s)"
+    return resultado
 
 
 def revisar_cierres() -> dict:
@@ -169,17 +235,30 @@ _sched = None
 
 
 def arrancar() -> None:
-    """Programa el sondeo del cierre si REPORTE_EOD_AUTO está activo."""
+    """Programa el sondeo del cierre y el resumen de lo aprobado sin preguntar.
+
+    Los dos van por separado y con interruptores distintos: el reporte de cierre habla del NEGOCIO
+    y hoy está apagado; el resumen de lo delegado habla de lo que se hizo EN TU NOMBRE sin
+    consultarte, y eso no debería depender de que el otro esté prendido."""
     global _sched
-    if not config.REPORTE_EOD_AUTO:
-        print("[scheduler] envío automático de cierre APAGADO (REPORTE_EOD_AUTO=false).", flush=True)
-        return
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
     except Exception as ex:  # noqa: BLE001
-        print(f"[scheduler] APScheduler no disponible ({ex}); no se programa el cierre", flush=True)
+        print(f"[scheduler] APScheduler no disponible ({ex}); no se programa nada", flush=True)
         return
     _sched = BackgroundScheduler(timezone=config.REPORTE_TZ)
+
+    if config.RESUMEN_DELEGADO_AUTO:
+        hh, mm = (config.RESUMEN_DELEGADO_HORA.split(":") + ["0"])[:2]
+        _sched.add_job(resumen_delegado, "cron", hour=int(hh), minute=int(mm),
+                       id="resumen_delegado")
+        print(f"[scheduler] resumen de lo aprobado sin preguntar: {config.RESUMEN_DELEGADO_HORA} "
+              f"(sólo si hubo algo).", flush=True)
+
+    if not config.REPORTE_EOD_AUTO:
+        print("[scheduler] envío automático de cierre APAGADO (REPORTE_EOD_AUTO=false).", flush=True)
+        _sched.start()
+        return
     # Sondea el estado del día operativo cada REPORTE_EOD_POLL_MIN minutos; el primer chequeo corre
     # enseguida (por si el día ya cerró cuando el bot arranca de tarde).
     _sched.add_job(

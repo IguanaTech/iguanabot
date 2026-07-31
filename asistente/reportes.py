@@ -69,6 +69,31 @@ class Reporte:
     datos: dict
 
 
+def hubo_movimiento(rep: "Reporte") -> bool:
+    """¿Este día tiene ALGO que contar?
+
+    Regla de Eduardo (2026-07-30), y vale para todo lo que el bot manda solo: si no hay nada que
+    reportar, no se manda. Un mensaje diario que a veces dice "no pasó nada" entrena a la gente a
+    no abrirlo — y el día que trae algo importante, tampoco lo abre. El silencio es información:
+    significa que no hubo movimiento.
+
+    "Algo que contar" = se vendió, se pagó o quedó pendiente un premio. Si los tres están en cero,
+    la banca no operó ese día y no hay reporte que mandar.
+    """
+    d = rep.datos or {}
+    def _n(bloque, *claves):
+        r = ((d.get(bloque) or {}).get("resumen") or {})
+        for k in claves:
+            try:
+                if int(float(r.get(k) or 0)) != 0:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+    return (_n("ventas", "total_monto", "total_vendido", "total_tickets")
+            or _n("ganadores", "total_premios", "premios_por_pagar", "total_pagados"))
+
+
 def datos_dia(consorcio: Consorcio, dia: date | None = None) -> Reporte:
     dia = dia or date.today()
     d = dia.isoformat()

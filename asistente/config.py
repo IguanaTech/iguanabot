@@ -69,6 +69,14 @@ class Config:
     # cambiar TTS_MOTOR a polly (Mia) o elevenlabs — el código ya está en voice.py.
     PIPER_MODEL = os.getenv("PIPER_MODEL", "/voces/es_MX-claude-high.onnx")
 
+    # Resumen de lo que el bot APROBÓ SIN PREGUNTAR (back mig 221). Va aparte del reporte de cierre
+    # a propósito: aquél habla del negocio y hoy está apagado; éste habla de lo que se hizo en tu
+    # nombre sin consultarte, y no debería depender de que el otro esté prendido.
+    # SÓLO SE MANDA SI HUBO ALGO: un mensaje diario que a veces dice "no pasó nada" hace que dejen
+    # de abrirlo, y el día que trae algo importante tampoco se abre.
+    RESUMEN_DELEGADO_AUTO = os.getenv("RESUMEN_DELEGADO_AUTO", "true").lower() == "true"
+    RESUMEN_DELEGADO_HORA = os.getenv("RESUMEN_DELEGADO_HORA", "21:00")
+
     # Reportes
     REPORTE_PDF = os.getenv("REPORTE_PDF", "true").lower() == "true"      # adjuntar PDF además del texto
     REPORTE_TZ = os.getenv("REPORTE_TZ", "America/Santo_Domingo")

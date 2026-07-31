@@ -369,6 +369,98 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
         n = len(alertas) if isinstance(alertas, list) else 0
         return f"{n} alertas registradas hoy." if n else "Sin alertas hoy."
 
+    # ── Lo que está esperando una decisión, CON SUS IDS ─────────────────────────
+    #
+    # Existía `gestionar_alerta` para actuar sobre una alerta, y del otro lado `alertas_del_dia`
+    # devolvía sólo un NÚMERO: «3 alertas registradas hoy». O sea que el modelo tenía la mano pero
+    # no el objeto — nunca podía obtener el id que la acción le pedía. Una herramienta de escritura
+    # sin su lectura correspondiente es una herramienta muerta, y peor: el bot contestaba "puedo
+    # gestionar alertas" con toda razón, y después no podía.
+    #
+    # Esto devuelve lo ACCIONABLE con su id: alertas, gastos de caja chica por aprobar, entregas de
+    # efectivo por confirmar, solicitudes abiertas y pánicos.
+    def pendientes_por_decidir(que: str = "todo") -> str:
+        """Lo que está ESPERANDO UNA DECISIÓN tuya, con los ids para poder actuar. `que` ∈ todo |
+        alertas | gastos | entregas | solicitudes | panicos. Úsalo ANTES de aprobar, rechazar,
+        reconocer o confirmar cualquier cosa: de acá salen los ids que piden esas herramientas.
+        Responde a «¿qué tengo pendiente?», «¿qué hay que aprobar?», «¿qué está esperando por mí?»."""
+        q = (que or "todo").strip().lower()
+        partes: list[str] = []
+
+        def _quiere(k: str) -> bool:
+            return q in ("todo", k)
+
+        op = {}
+        if _quiere("alertas") or _quiere("gastos") or _quiere("entregas") or _quiere("solicitudes"):
+            try:
+                op = _get(consorcio, "/api/crm/dashboard/operativo") or {}
+            except Exception:  # noqa: BLE001
+                partes.append("PANEL: no pude leerlo.")
+
+        alertas = (op.get("alertas") or {}) if isinstance(op, dict) else {}
+
+        if _quiere("gastos"):
+            gs = alertas.get("gastos_mayores_pendientes") or []
+            if gs:
+                partes.append("GASTOS DE CAJA CHICA POR APROBAR:\n" + "\n".join(
+                    f"  · {g.get('banca_nombre') or g.get('estacion_nombre') or 'banca'} "
+                    f"{_rd(g.get('monto'))} — {g.get('motivo') or g.get('descripcion') or 'sin motivo'} "
+                    f"[id {g.get('id')}]"
+                    for g in gs[:15]))
+            elif q == "gastos":
+                partes.append("Sin gastos de caja chica esperando aprobación.")
+
+        if _quiere("entregas"):
+            try:
+                pend = _get(consorcio, "/api/efectivo-central/pendientes") or {}
+                filas = pend.get("data", pend) if isinstance(pend, dict) else pend
+                filas = filas if isinstance(filas, list) else []
+                if filas:
+                    partes.append("EFECTIVO ENTREGADO, ESPERANDO QUE LO DES POR RECIBIDO:\n" + "\n".join(
+                        f"  · {f.get('empleado_nombre') or 'mensajero'} entregó {_rd(f.get('monto'))} "
+                        f"en {f.get('central_nombre') or 'la central'} [id {f.get('id')}]"
+                        for f in filas[:15]))
+                elif q == "entregas":
+                    partes.append("Sin entregas de efectivo esperando confirmación.")
+            except Exception:  # noqa: BLE001
+                partes.append("ENTREGAS: no pude leerlas.")
+
+        if _quiere("panicos"):
+            try:
+                pn = _get(consorcio, "/api/crm/panico") or {}
+                filas = pn.get("data", pn) if isinstance(pn, dict) else pn
+                filas = filas if isinstance(filas, list) else []
+                if filas:
+                    partes.append("🚨 PÁNICOS ABIERTOS:\n" + "\n".join(
+                        f"  · {p.get('empleado_nombre') or 'alguien'} — {p.get('creado_en') or ''} "
+                        f"{'(ya reconocido)' if p.get('reconocido_en') else '(SIN RECONOCER)'} "
+                        f"[id {p.get('id')}]"
+                        for p in filas[:10]))
+                elif q == "panicos":
+                    partes.append("Sin pánicos abiertos.")
+            except Exception:  # noqa: BLE001
+                partes.append("PÁNICOS: no pude leerlos.")
+
+        if _quiere("solicitudes"):
+            ss = alertas.get("solicitudes_abiertas") or []
+            if ss:
+                partes.append("SOLICITUDES ABIERTAS:\n" + "\n".join(
+                    f"  · {s.get('banca_nombre') or 'banca'} pide {s.get('tipo') or ''} "
+                    f"{_rd(s.get('monto')) if s.get('monto') else ''} [id {s.get('id')}]"
+                    for s in ss[:15]))
+            elif q == "solicitudes":
+                partes.append("Sin solicitudes abiertas.")
+
+        if _quiere("alertas"):
+            otras = {k: v for k, v in alertas.items()
+                     if v and k not in ("gastos_mayores_pendientes", "solicitudes_abiertas")}
+            if otras:
+                partes.append("OTRAS ALERTAS DEL PANEL:\n" + "\n".join(
+                    f"  · {k}: {len(v)} — ids: {', '.join(str(i.get('id')) for i in v[:5] if isinstance(i, dict))}"
+                    for k, v in list(otras.items())[:12]))
+
+        return "\n\n".join(partes) if partes else "No hay nada esperando una decisión tuya."
+
     def reporte_del_dia() -> str:
         """Arma el REPORTE del día del negocio (ventas, ganancia, bancas, riesgo, fraude) y se lo
         entrega al cliente. Úsalo cuando pidan 'el reporte', 'cómo fue el día', 'resumen de hoy'.
@@ -915,6 +1007,47 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
             params["banca_id"] = b["id"]
         return _resultado_accion(_accion(consorcio, "cargar-egreso", telefono, params, confirmado))
 
+    def aprobar_gasto_caja_chica(movimiento_id: str, accion: str = "aprobar", motivo: str = "",
+                                 confirmado: bool = False) -> str:
+        """APRUEBA o RECHAZA un gasto de caja chica que está esperando decisión. `movimiento_id` sale
+        de `pendientes_por_decidir`. `accion` = aprobar | rechazar; rechazar EXIGE `motivo`.
+
+        Un gasto por vez, a propósito: nunca apruebes varios de una. Paso 1: confirmado=False →
+        preview con el monto real leído de la base (no del texto del mensaje)."""
+        params = {"movimiento_id": movimiento_id, "accion": accion}
+        if motivo:
+            params["motivo"] = motivo
+        return _resultado_accion(
+            _accion(consorcio, "aprobar-gasto-caja-chica", telefono, params, confirmado))
+
+    def atender_panico(incidente_id: str, accion: str, nota: str = "",
+                       confirmado: bool = False) -> str:
+        """RECONOCE o da por RESUELTO un pánico (el botón de SOS de un mensajero en la calle).
+        `incidente_id` sale de `pendientes_por_decidir`. `accion` = reconocer | resolver.
+
+        «reconocer» = lo estás atendiendo y deja de escalar. «resolver» = ya se resolvió, con `nota`
+        de qué pasó. NUNCA se hace solo: siempre pide el sí, porque reconocer APAGA el escalamiento
+        y hace creer que alguien va en camino. Paso 1: confirmado=False → preview."""
+        params = {"incidente_id": incidente_id, "accion": accion}
+        if nota:
+            params["nota"] = nota
+        return _resultado_accion(_accion(consorcio, "atender-panico", telefono, params, confirmado))
+
+    def confirmar_entrega_efectivo(movimiento_id: str, accion: str = "confirmar", motivo: str = "",
+                                   confirmado: bool = False) -> str:
+        """DA POR RECIBIDO (o rechaza) el efectivo que un mensajero declaró haber entregado en la
+        central. `movimiento_id` sale de `pendientes_por_decidir`. `accion` = confirmar | rechazar;
+        rechazar EXIGE `motivo`.
+
+        Hasta que alguien confirma, esa plata está en el aire. NUNCA se hace solo, por más chico que
+        sea el monto: recoger dinero pasa siempre por un encargado o un admin. Paso 1:
+        confirmado=False → preview con el monto real de la base."""
+        params = {"movimiento_id": movimiento_id, "accion": accion}
+        if motivo:
+            params["motivo"] = motivo
+        return _resultado_accion(
+            _accion(consorcio, "confirmar-entrega-central", telefono, params, confirmado))
+
     # ── Memoria semántica (hechos durables de ESTA persona) ──────────────────────
     # Explícita a propósito: el modelo decide QUÉ vale la pena recordar y lo dice. La
     # alternativa —extraer hechos automáticamente de cada mensaje— llena la memoria de datos
@@ -1067,6 +1200,12 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
         StructuredTool.from_function(asignar_tarea),
         StructuredTool.from_function(aprobar_solicitud),
         StructuredTool.from_function(cargar_egreso),
+        StructuredTool.from_function(aprobar_gasto_caja_chica),
+        StructuredTool.from_function(atender_panico),
+        StructuredTool.from_function(confirmar_entrega_efectivo),
+        # La lectura que le da SENTIDO a las de arriba: de acá salen los ids. Sin esto, las
+        # acciones existen y el modelo nunca puede usarlas.
+        StructuredTool.from_function(pendientes_por_decidir),
         # Dinero / operación en vivo
         StructuredTool.from_function(operativo),
         StructuredTool.from_function(disponible_para_retirar),

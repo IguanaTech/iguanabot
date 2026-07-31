@@ -155,7 +155,7 @@ def _bucle() -> None:
     yo = _api("getMe", {})
     if not yo:
         _estado["error"] = "getMe falló (¿token inválido?)"
-        print("[telegram] no pude autenticarme con Telegram; revisá el token.")
+        print("[telegram] no pude autenticarme con Telegram; revisa el token.")
         return
     _estado["conectado"] = True
     print(f"[telegram] conectado como @{yo.get('username')}.")

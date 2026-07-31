@@ -996,14 +996,18 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
             partes.append("PREMIOS: no pude consultarlos.")
 
         # Efectivo disponible (hoy, no del período: es un saldo, no un acumulado).
+        #
+        # OJO con el path: `/api/crm/dinero/disponible` NO EXISTE — nunca existió. La línea vivía
+        # dentro de un `except: pass`, así que el 404 no se veía por ningún lado: el resumen salía
+        # sin el disponible y nadie podía saber que faltaba algo. Es el mismo modo de fallar que el
+        # `_safe` que se tragaba el 404 de las políticas: un error mudo que se lee como "no hay".
+        # El endpoint real es por banca y trae `disponible` en la raíz.
         try:
-            dic = _get(consorcio, "/api/crm/dinero/disponible") or {}
-            for x in (dic.get("por_banca") or []):
-                if str(x.get("banca_id")) == str(b["id"]):
-                    partes.append(f"DISPONIBLE PARA RETIRAR hoy: {_rd(x.get('disponible'))}.")
-                    break
+            bal = _get(consorcio, f"/api/bancas/{b['id']}/balance") or {}
+            if bal.get("disponible") is not None:
+                partes.append(f"DISPONIBLE PARA RETIRAR hoy: {_rd(bal.get('disponible'))}.")
         except Exception:  # noqa: BLE001
-            pass
+            partes.append("DISPONIBLE: no pude consultarlo.")
 
         return " ".join(partes)
 

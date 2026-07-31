@@ -207,6 +207,57 @@ def _alarmas_dinero_estancado(consorcio: Consorcio) -> list[tuple[str, str]]:
     return avisos
 
 
+def _alarmas_anulacion_por_vencer(consorcio: Consorcio) -> list[tuple[str, str]]:
+    """Pedidos de ANULAR un ticket que van camino a quedar sin atender.
+
+    Es la única alarma con HORA LÍMITE DURA. Cuando la lotería cierra no lo anula nadie —ni el
+    admin— y el ticket queda válido, y si salió, gana. Por eso no encaja en ninguna de las otras
+    dos familias: no es un pico transitorio que se puede re-avisar cada media hora para siempre, ni
+    un estado que dura días y se recuerda una vez al día. Sirve ahora o no sirve.
+
+    Nace de un caso real que está en tribunales: la clienta pidió anular, la empleada se olvidó, el
+    número salió ganador. El pedido existía sólo en un WhatsApp y nadie se enteró de que quedó sin
+    atender.
+
+    Dos avisos por pedido y no más, por eso la clave lleva el TRAMO:
+      · el primero cuando entra en la ventana de aviso;
+      · el segundo cuando quedan 15 minutos o menos, con otro tono.
+    Un tercero no ayudaría: si a esa altura nadie lo miró, el problema no es el recordatorio.
+    """
+    avisos = []
+    try:
+        d = _get(consorcio, "/api/crm/dashboard/operativo")
+    except Exception as ex:  # noqa: BLE001
+        print(f"[watcher] operativo (anulaciones) {consorcio.nombre}: {ex}")
+        return avisos
+
+    for a in (d.get("alertas", {}) or {}).get("anulaciones_por_vencer", []) or []:
+        mins = a.get("minutos_restantes")
+        if mins is None:
+            continue
+        sid = a.get("id")
+        if mins < 0:
+            # Ya se pasó. Se avisa UNA vez, porque no hay nada que hacer y sí algo que saber: ese
+            # ticket quedó válido. Callarlo sería justo el silencio que hoy está en tribunales.
+            avisos.append((f"anulacion:{sid}:vencido",
+                "🎫 *PEDIDO DE ANULACIÓN VENCIDO*\n"
+                f"El pedido #{a.get('numero')} se pasó de la hora sin atenderse. "
+                "La lotería cerró: ese ticket es VÁLIDO y si salió, gana. "
+                "Ya no lo puede anular nadie."
+            ))
+            continue
+
+        tramo = "urgente" if mins <= 15 else "aviso"
+        cabeza = "🚨 *ÚLTIMOS MINUTOS*" if tramo == "urgente" else "🎫 *PEDIDO DE ANULACIÓN*"
+        avisos.append((f"anulacion:{sid}:{tramo}",
+            f"{cabeza} — quedan {mins} min\n"
+            f"La banca pidió anular un ticket (pedido #{a.get('numero')}) y sigue sin resolverse. "
+            "Cuando cierre la lotería ya no se puede, ni por el admin: el ticket queda válido. "
+            "Contéstame «aprobar solicitud» o resuélvelo en el CRM."
+        ))
+    return avisos
+
+
 def _enviar_a_todos(destinos: list[str], texto: str) -> bool:
     """Empuja `texto` a cada teléfono; devuelve True si salió al menos a uno."""
     enviado = False
@@ -233,6 +284,11 @@ def revisar_todos() -> None:
         # Alarmas TRANSITORIAS (cooldown de 30 min, en memoria) — solo si ALARMAS_PUSH. Solo el número
         # caliente (dato filtrado): es un pico transitorio y urgente, re-avisar cada 30 min está bien.
         avisos = _alarmas_caliente(full) if config.ALARMAS_PUSH else []
+        # Los pedidos de anulación van acá y NO con los recordatorios diarios: su ventana se
+        # mide en minutos. La clave lleva el tramo (aviso/urgente/vencido), así que salen dos
+        # veces por pedido como mucho.
+        if config.AVISO_ANULACION:
+            avisos += _alarmas_anulacion_por_vencer(full)
         # Recordatorios de estados PERSISTENTES de dinero (UNA vez al día, dedup persistido) — solo si
         # RECORDATORIO_DINERO. Dinero estancado del mensajero + banca sin fondos para premios: son
         # estados que duran días; avisar cada 30 min spameaba (Eduardo 2026-07-21) → una sola vez al

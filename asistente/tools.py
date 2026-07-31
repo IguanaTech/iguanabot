@@ -381,7 +381,7 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
     # efectivo por confirmar, solicitudes abiertas y pánicos.
     def pendientes_por_decidir(que: str = "todo") -> str:
         """Lo que está ESPERANDO UNA DECISIÓN tuya, con los ids para poder actuar. `que` ∈ todo |
-        alertas | gastos | entregas | solicitudes | panicos. Úsalo ANTES de aprobar, rechazar,
+        alertas | gastos | entregas | solicitudes | panicos | anulaciones. Úsalo ANTES de aprobar, rechazar,
         reconocer o confirmar cualquier cosa: de acá salen los ids que piden esas herramientas.
         Responde a «¿qué tengo pendiente?», «¿qué hay que aprobar?», «¿qué está esperando por mí?»."""
         q = (que or "todo").strip().lower()
@@ -440,6 +440,23 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
                     partes.append("Sin pánicos abiertos.")
             except Exception:  # noqa: BLE001
                 partes.append("PÁNICOS: no pude leerlos.")
+
+        # Los pedidos de ANULAR van ANTES que el resto: son los únicos con hora límite dura.
+        # Cuando la lotería cierra ya no se puede, ni el admin, y el ticket queda válido.
+        if _quiere("solicitudes") or _quiere("anulaciones"):
+            an = alertas.get("anulaciones_por_vencer") or []
+            if an:
+                lineas = []
+                for x in an:
+                    m = x.get("minutos_restantes")
+                    reloj = (f"quedan {m} min" if isinstance(m, int) and m >= 0
+                             else "YA SE PASÓ — el ticket quedó válido")
+                    lineas.append(f"  · pedido #{x.get('numero')} — {reloj} [id {x.get('id')}]")
+                partes.append("⏰ ANULACIONES DE TICKET POR VENCER:\n" + "\n".join(lineas)
+                              + "\nSe aprueban como cualquier solicitud, pero DESPUÉS DEL CIERRE "
+                                "no se puede, ni por el admin.")
+            elif q == "anulaciones":
+                partes.append("Sin pedidos de anulación por vencer.")
 
         if _quiere("solicitudes"):
             ss = alertas.get("solicitudes_abiertas") or []

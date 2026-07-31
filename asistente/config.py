@@ -115,6 +115,12 @@ class Config:
     RECORDATORIO_DINERO = os.getenv("RECORDATORIO_DINERO", "true").lower() == "true"
     RECORDATORIO_DINERO_HORA = int(os.getenv("RECORDATORIO_DINERO_HORA", "9"))  # primer tick tras esta hora local
 
+    # Pedidos de ANULAR un ticket que van camino a quedar sin atender. Independiente de las otras
+    # dos: no es dinero estancado (que dura días y se recuerda una vez al día) ni un pico
+    # transitorio — es una hora límite dura. Pasado el cierre de la lotería no lo anula nadie y el
+    # ticket queda válido, así que el aviso no se puede posponer al día siguiente: sirve o no sirve.
+    AVISO_ANULACION = os.getenv("AVISO_ANULACION", "true").lower() == "true"
+
     # Seguridad
     AVISAR_DESCONOCIDOS = os.getenv("AVISAR_DESCONOCIDOS", "true").lower() == "true"
 

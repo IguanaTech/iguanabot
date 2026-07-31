@@ -54,6 +54,21 @@ CREATE INDEX idx_memoria_telefono ON memoria(telefono);
 -- Índice ANN para búsqueda por similitud (coseno). Crear tras cargar datos si el volumen crece.
 CREATE INDEX idx_memoria_embedding ON memoria USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
+-- ── Vínculo del canal de Telegram ─────────────────────────────────────────────
+-- Telegram identifica por chat_id, pero TODO el gobierno del asistente cuelga del teléfono (la
+-- tabla asistente_contactos del back, configurable desde el CRM). Esta tabla es sólo el traductor
+-- chat_id → teléfono; no decide permisos. El número llega por el botón nativo "compartir mi
+-- contacto", o sea puesto por Telegram desde la cuenta y no tecleado por la persona.
+CREATE TABLE IF NOT EXISTS telegram_vinculo (
+  chat_id    bigint PRIMARY KEY,
+  user_id    bigint NOT NULL,
+  telefono   text   NOT NULL,
+  creado_en  timestamptz NOT NULL DEFAULT now()
+);
+-- Un teléfono, un chat: dos vínculos vivos harían que un mensaje proactivo saliera duplicado o
+-- por el canal equivocado.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_telegram_vinculo_telefono ON telegram_vinculo(telefono);
+
 -- ── Bitácora de interacciones (auditoría del asistente) ───────────────────────
 -- Toda conversación queda registrada: quién, qué preguntó, qué herramientas llamó, qué respondió.
 -- El asistente ve a TODOS → esto es parte de su superficie de seguridad.

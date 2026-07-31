@@ -54,6 +54,12 @@ class Config:
 
     # Puente de WhatsApp
     BRIDGE_URL = os.getenv("BRIDGE_URL", "http://bridge:3100")
+    # Puente de TELEGRAM (canal paralelo, mismo cerebro). Vacío = canal apagado. El token lo da
+    # @BotFather. Telegram es la API OFICIAL para bots: no hay verificación de empresa, no hay
+    # plantillas aprobadas para los mensajes que inicia el bot, y no hay riesgo de que restrinjan
+    # la cuenta — que es lo que le pasó al canal de WhatsApp (error 463 con el cliente no oficial).
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_BRIDGE_URL = os.getenv("TELEGRAM_BRIDGE_URL", "http://telegram:3200")
 
     # Voz
     VOZ_HABILITADA = os.getenv("VOZ_HABILITADA", "true").lower() == "true"

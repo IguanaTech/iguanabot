@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from . import memoria
 from .config import config
 from .graph import responder, preparar_memoria
+from . import telegram_vinculo
 from .identity import BackInalcanzable, consorcio_de, resolver, sincronizar_todos
 from . import heartbeat, reportes, retencion, scheduler, voice, watcher
 
@@ -34,6 +35,11 @@ def _startup() -> None:
             memoria.preparar()
         except Exception as ex:  # noqa: BLE001
             print(f"[startup] memoria semántica avisó: {ex}")
+    # Vínculo chat de Telegram ↔ teléfono (traductor de identidad del canal, no autoridad).
+    try:
+        telegram_vinculo.preparar()
+    except Exception as ex:  # noqa: BLE001
+        print(f"[startup] vínculo de Telegram avisó: {ex}")
     # Sincroniza el directorio desde los backs registrados (best-effort).
     try:
         print(f"[startup] roster: {sincronizar_todos()}")
@@ -55,11 +61,26 @@ class MensajeEntrante(BaseModel):
     audio_base64: str | None = None  # si mandó nota de voz (ogg/opus)
 
 
+class MensajeTelegram(BaseModel):
+    """Lo que manda el puente de Telegram. NO trae teléfono: trae el chat y quién escribe, y el
+    asistente lo traduce (ver telegram_vinculo). El puente es transporte puro — ninguna decisión
+    de identidad vive del lado de Node/Telegram."""
+    chat_id: int
+    user_id: int                       # quién escribe (para verificar el contacto compartido)
+    texto: str | None = None
+    audio_base64: str | None = None
+    contacto_telefono: str | None = None   # si tocó "compartir mi contacto"
+    contacto_user_id: int | None = None    # dueño de ese contacto — TIENE que ser user_id
+
+
 class RespuestaSaliente(BaseModel):
     texto: str
     audio_base64: str | None = None      # nota de voz de respuesta (ogg/opus), si aplica
     documento_base64: str | None = None  # PDF del reporte, si el cliente lo pidió
     documento_nombre: str | None = None
+    # Le dice al puente de Telegram que muestre el botón de compartir contacto. Los demás canales
+    # lo ignoran (en WhatsApp el teléfono viene con el mensaje).
+    pedir_contacto: bool = False
 
 
 def _bitacora(telefono, consorcio_id, entrada, respuesta) -> None:
@@ -76,10 +97,43 @@ def _bitacora(telefono, consorcio_id, entrada, respuesta) -> None:
 
 @app.post("/mensaje", response_model=RespuestaSaliente)
 def mensaje(m: MensajeEntrante) -> RespuestaSaliente:
+    """Canal WhatsApp: el teléfono viene en el mensaje."""
+    return _atender(m.telefono, m.texto, m.audio_base64)
+
+
+@app.post("/mensaje-telegram", response_model=RespuestaSaliente)
+def mensaje_telegram(m: MensajeTelegram) -> RespuestaSaliente:
+    """Canal Telegram: el teléfono NO viene; se resuelve por el vínculo del chat.
+
+    Un canal más, el MISMO cerebro: apenas se traduce chat→teléfono se cae en `_atender`, que es
+    literalmente el mismo camino que WhatsApp (identidad contra el back, alcance, voz, PDF). Si
+    esto duplicara el flujo, las dos copias empezarían a diferir y una de las dos tendría el
+    agujero."""
+    # ¿Está compartiendo su contacto? Es el único momento en que se crea el vínculo.
+    if m.contacto_telefono:
+        tel = telegram_vinculo.vincular(m.chat_id, m.user_id, m.contacto_user_id, m.contacto_telefono)
+        if not tel:
+            return RespuestaSaliente(
+                texto="Ese contacto no es el tuyo. Usa el botón para compartir TU contacto.",
+                pedir_contacto=True)
+        # Vinculado: se sigue de largo y se le contesta algo útil, no un "listo" a secas.
+        return _atender(tel, m.texto or "hola", None)
+
+    tel = telegram_vinculo.telefono_de(m.chat_id)
+    if not tel:
+        return RespuestaSaliente(
+            texto="Para identificarte necesito tu número. Toca el botón de abajo para compartir tu "
+                  "contacto — es de una sola vez.",
+            pedir_contacto=True)
+    return _atender(tel, m.texto, m.audio_base64)
+
+
+def _atender(telefono: str, texto_in: str | None, audio_base64: str | None) -> RespuestaSaliente:
+    """El camino común de TODOS los canales: identidad → voz → agente → PDF → respuesta."""
     # 1) Identidad. Desconocido = no se le sirve nada; back caído = avisar que es transitorio (para no
     #    hacerle creer a un usuario legítimo que le revocaron el acceso durante un hipo del back).
     try:
-        ident = resolver(m.telefono)
+        ident = resolver(telefono)
     except BackInalcanzable:
         return RespuestaSaliente(
             texto="No puedo verificar tu identidad ahora mismo (problema de conexión con el sistema). "
@@ -95,11 +149,11 @@ def mensaje(m: MensajeEntrante) -> RespuestaSaliente:
 
     # 2) Si vino voz, transcribir. Recordamos si fue voz para contestar en voz.
     era_voz = False
-    if m.audio_base64 and config.VOZ_HABILITADA:
+    if audio_base64 and config.VOZ_HABILITADA:
         era_voz = True
-        texto = voice.transcribir(base64.b64decode(m.audio_base64))
+        texto = voice.transcribir(base64.b64decode(audio_base64))
     else:
-        texto = m.texto or ""
+        texto = texto_in or ""
     if not texto.strip():
         return RespuestaSaliente(texto="No entendí el mensaje. ¿Me lo repites?")
 

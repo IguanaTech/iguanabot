@@ -20,6 +20,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import httpx
 
+from . import telegram_vinculo
 from .config import config
 from .registry import consorcio_por_id, listar_consorcios
 from . import reportes
@@ -51,12 +52,29 @@ def _hhmm(valor: str):
 
 
 def enviar_por_puente(telefono: str, texto: str, pdf: bytes | None, nombre: str | None) -> None:
-    payload = {"telefono": telefono, "texto": texto}
+    """Manda un mensaje que INICIA el bot (reporte de cierre, alarmas) por el canal de esa persona.
+
+    ELIGE EL CANAL, no manda por los dos: quien está en Telegram lo recibe por Telegram; el resto,
+    por WhatsApp. Mandar por ambos sería duplicarle el reporte a la misma persona, y peor: con el
+    WhatsApp restringido, la mitad de los envíos fallaría y ensuciaría el registro de entregas.
+
+    Telegram va PRIMERO a propósito: es el canal que hoy funciona sin restricciones. Si la persona
+    no está vinculada, `chat_de` devuelve None y se cae a WhatsApp exactamente como antes."""
+    payload = {"texto": texto}
     if pdf:
         payload["documento_base64"] = base64.b64encode(pdf).decode()
         payload["documento_nombre"] = nombre or "reporte.pdf"
+
+    chat_id = telegram_vinculo.chat_de(telefono) if config.TELEGRAM_BOT_TOKEN else None
+    if chat_id is not None:
+        with httpx.Client(timeout=30) as client:
+            client.post(f"{config.TELEGRAM_BRIDGE_URL}/enviar",
+                        json={**payload, "chat_id": chat_id}).raise_for_status()
+        return
+
     with httpx.Client(timeout=30) as client:
-        client.post(f"{config.BRIDGE_URL}/enviar", json=payload).raise_for_status()
+        client.post(f"{config.BRIDGE_URL}/enviar",
+                    json={**payload, "telefono": telefono}).raise_for_status()
 
 
 def _enviar_a_consorcio(full, c_id: str, dia: date, preliminar: bool) -> int:

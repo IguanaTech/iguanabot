@@ -43,6 +43,19 @@ services:
       - waauth:/app/auth   # sesión de WhatsApp (Baileys) persistente entre reinicios
       - ./qr:/app/qrout    # el puente escribe acá el QR como PNG (se sobreescribe en cada rotación)
 
+  # Segundo puente: MISMO cerebro, otro transporte. Telegram es la API oficial para bots — no
+  # necesita cuenta de empresa, ni plantillas aprobadas para los mensajes que inicia el bot, ni
+  # arriesga que restrinjan la cuenta (el 463 que dejó mudo al canal de WhatsApp). Se apaga solo
+  # si no hay TELEGRAM_BOT_TOKEN en el .env.
+  # Sin `ports:`: usa long polling (conexión SALIENTE), así que no expone nada nuevo al público;
+  # su /enviar sólo lo alcanza el asistente por la red interna.
+  telegram:
+    build: ./telegram
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - asistente
+
 volumes:
   pgdata:
   waauth:

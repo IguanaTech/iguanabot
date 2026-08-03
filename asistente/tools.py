@@ -1207,6 +1207,18 @@ def construir_tools(consorcio: Consorcio, telefono: str, identidad=None) -> list
         if not t or not t.get("id"):
             return f"No encontré ningún ticket con el código {cod}."
 
+        # ACOTAMIENTO. El bot lee con un token de servicio GLOBAL: el back le contesta de cualquier
+        # banca, así que el recorte por persona tiene que hacerlo el bot. `_banca_permitida` ya se
+        # usa en las otras seis herramientas; acá faltaba, y un encargado acotado podía preguntar
+        # por el ticket de una banca ajena y enterarse de cuánto ganó y si ya lo pagaron.
+        #
+        # Se responde "no lo encontré" y no "no tienes permiso": decir que existe pero es de otro
+        # ya es contar algo. Para quien pregunta, un ticket que no es suyo y uno que no existe son
+        # lo mismo.
+        banca_del_ticket = t.get("banca_id") or (t.get("banca") or {}).get("id")
+        if banca_del_ticket and not _banca_permitida(banca_del_ticket):
+            return f"No encontré ningún ticket con el código {cod}."
+
         estado = str(t.get("estado") or "")
         legible = {
             "ganador_pendiente": "GANADOR, todavía SIN COBRAR",

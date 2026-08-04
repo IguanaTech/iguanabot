@@ -206,6 +206,21 @@ def _alarmas_dinero_estancado(consorcio: Consorcio) -> list[tuple[str, str]]:
             f"a depositar o a entregar en central. También puedes bajar la alerta en el CRM → "
             f"Operaciones (con motivo)."
         ))
+    # EL BALANCE DE UNA BANCA NO CUADRA. El POS recibió del back un balance que no cierra consigo
+    # mismo y se negó a mostrarlo — bien hecho: un número de dinero en el que no se puede confiar es
+    # peor que ninguno. NO ES UN ERROR DE LA VENDEDORA, y el mensaje lo dice: ella es la que lo ve
+    # primero, y mientras tanto está trabajando sin ver su balance.
+    for d in alertas.get("pos_descuadres", []) or []:
+        ref = f"descuadre:estacion:{d.get('estacion_id')}"
+        banca = d.get("nombre") or "Una banca"
+        est = d.get("estacion_nombre") or "una estación"
+        n = d.get("reportes") or "?"
+        avisos.append((ref,
+            f"⚖️ *EL BALANCE NO CUADRA* — {banca} ({est})\n"
+            f"El punto de venta recibió un balance que no cierra consigo mismo y se negó a "
+            f"mostrarlo ({n} vez/veces). No es un error de la vendedora: es una cuenta del sistema. "
+            f"Mientras tanto ella está trabajando sin ver su balance. Revisa la banca."
+        ))
     for b in alertas.get("bancas_tickets_sin_recoger", []) or []:
         ref = f"estancado:tickets:{b.get('banca_id')}"
         nombre = b.get("nombre") or "Una banca"

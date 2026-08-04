@@ -77,6 +77,34 @@ def enviar_por_puente(telefono: str, texto: str, pdf: bytes | None, nombre: str 
                     json={**payload, "telefono": telefono}).raise_for_status()
 
 
+def _avisar_no_entregados(fallidos: list[str], entregados: list[str]) -> None:
+    """Le cuenta a QUIEN SÍ recibió que a alguien no le llegó.
+
+    Un envío que falla imprimía una línea en el log del contenedor y ahí moría. Nadie lee el log del
+    contenedor — y desde el lado de la persona que no recibió nada, «no me llegó» y «no hubo nada que
+    contar» se ven exactamente igual. O sea: el reporte podía dejar de llegarle a alguien por semanas
+    sin que nadie se enterara.
+
+    El aviso va a los que SÍ recibieron, que son los únicos alcanzables por definición. Es una línea
+    corta pegada al mensaje que ya esperaban, no una notificación nueva: si nadie recibió nada, no
+    hay a quién avisarle y el log sigue siendo el único registro (no se inventa un canal que no hay).
+    """
+    if not fallidos or not entregados:
+        return
+    quienes = ", ".join(fallidos)
+    aviso = (
+        "⚠ *No pude entregar este reporte a todos*\n"
+        f"Sin canal: {quienes}.\n"
+        "Suele ser que esa persona no está vinculada a Telegram y WhatsApp no está en servicio. "
+        "Se vincula escribiéndole al bot de Telegram."
+    )
+    for tel in entregados:
+        try:
+            enviar_por_puente(tel, aviso, None, None)
+        except Exception as ex:  # noqa: BLE001 — el aviso del aviso no puede encadenar fallos
+            print(f"[cierre] no se pudo avisar del no-entregado a {tel}: {ex}")
+
+
 def _enviar_senal_de_vida(full, c_id: str, rep, dia: date) -> int:
     """Una línea cuando el día cerró sin nada que contar. Ver el porqué en `_enviar_a_consorcio`."""
     venta = reportes.venta_del_dia(rep)
@@ -85,14 +113,16 @@ def _enviar_senal_de_vida(full, c_id: str, rep, dia: date) -> int:
         f"Venta: {venta}. Nada pendiente.\n"
         "_Si no te llega este mensaje algún día, el bot no está corriendo._"
     )
-    enviados = 0
+    entregados, fallidos = [], []
     for tel in reportes.destinatarios(c_id):
         try:
             enviar_por_puente(tel, cuerpo, None, None)
-            enviados += 1
+            entregados.append(tel)
         except Exception as ex:  # noqa: BLE001
+            fallidos.append(tel)
             print(f"[cierre] señal de vida a {tel} falló: {ex}")
-    return enviados
+    _avisar_no_entregados(fallidos, entregados)
+    return len(entregados)
 
 
 def _enviar_a_consorcio(full, c_id: str, dia: date, preliminar: bool) -> int:
@@ -124,14 +154,16 @@ def _enviar_a_consorcio(full, c_id: str, dia: date, preliminar: bool) -> int:
         texto = ("⚠ *Reporte preliminar* — el día aún no cerró formalmente en el sistema "
                  "(la última lotería podría no haber publicado sus números todavía).\n\n") + texto
     pdf = reportes.pdf(rep)
-    enviados = 0
+    entregados, fallidos = [], []
     for tel in reportes.destinatarios(c_id):
         try:
             enviar_por_puente(tel, texto, pdf, f"reporte-{rep.fecha}.pdf")
-            enviados += 1
+            entregados.append(tel)
         except Exception as ex:  # noqa: BLE001 — un destinatario que falla no frena a los demás
+            fallidos.append(tel)
             print(f"[cierre] fallo enviando a {tel}: {ex}")
-    return enviados
+    _avisar_no_entregados(fallidos, entregados)
+    return len(entregados)
 
 
 def resumen_delegado(dia: date | None = None) -> dict:

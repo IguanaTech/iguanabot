@@ -1,0 +1,89 @@
+# ============================================================================
+#  El semáforo del bot.
+#
+#  Este repo NO tenía CI. Y es el que más lo necesita de los cinco, porque es el
+#  único que le escribe DIRECTO a gente de afuera: un tono equivocado o un
+#  reporte mudo salen por WhatsApp/Telegram a las bancas antes de que nadie lo
+#  note. En el CRM un error lo ve Eduardo y lo reporta; acá lo ve un cliente.
+#
+#  Las pruebas ya existían —cuatro, escritas con cuidado— y se corrían a mano.
+#  O sea: existían mientras alguien se acordara.
+# ============================================================================
+name: tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pruebas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Postgres con pgvector, igual que `docker-compose.test.yml` del repo: mismo
+    # usuario, misma base, mismo puerto. La memoria semántica se prueba contra
+    # una base REAL — con un mock, lo único que se comprueba es el mock.
+    services:
+      pgvector:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: asistente
+          POSTGRES_PASSWORD: asistente
+          POSTGRES_DB: asistente
+        ports:
+          - 15433:5432
+        options: >-
+          --health-cmd "pg_isready -U asistente"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: dependencias
+        run: pip install -r asistente/requirements.txt
+
+      # Que TODO el paquete compile. Es la red más barata que hay y caza el error
+      # más tonto y más caro: un archivo que no parsea tumba el contenedor entero
+      # al arrancar, y el bot queda mudo sin que nadie lo note (el silencio del bot
+      # se confunde con «no hubo nada que reportar» — ya nos pasó).
+      - name: que todo compile
+        run: python -m compileall -q asistente telegram
+
+      # IDIOMA: tuteo dominicano, nunca voseo. Acá pesa más que en el CRM porque el
+      # texto de los prompts ES código: un ejemplo en voseo dentro del prompt le
+      # enseña al modelo justo lo que la orden le prohíbe.
+      - name: idioma (tuteo dominicano)
+        run: python -m asistente.test_idioma
+
+      # REPORTES MUDOS: que el bot no mande un reporte vacío ni se calle cuando hay
+      # algo que decir. Las dos fallas se parecen desde el teléfono.
+      - name: reportes mudos
+        run: python -m asistente.test_reportes_mudos
+
+      - name: identidad por Telegram (contra Postgres real)
+        env:
+          DATABASE_URL: postgresql://asistente:asistente@127.0.0.1:15433/asistente
+        run: python -m asistente.test_telegram
+
+      # La memoria semántica baja un modelo de embeddings (MiniLM, horneado en la
+      # imagen de producción). En CI se descarga: por eso va al final y con su
+      # propio timeout — si la descarga se cae, no se lleva puestas a las otras
+      # tres, que ya dieron su veredicto.
+      - name: memoria semántica (embeddings + pgvector)
+        timeout-minutes: 8
+        env:
+          DATABASE_URL: postgresql://asistente:asistente@127.0.0.1:15433/asistente
+        run: python -m asistente.test_memoria

@@ -193,6 +193,19 @@ def _alarmas_dinero_estancado(consorcio: Consorcio) -> list[tuple[str, str]]:
             f"Lleva {dias_txt} con RD$ {_fmt_money(m.get('saldo'))} en mano sin llevarlo a la central. "
             f"Coordina la entrega/traspaso, o baja la alerta en el CRM → Operaciones (con motivo)."
         ))
+    # TOPE DE EFECTIVO EN MANO: no es "hace días" como la de arriba, es AHORA MISMO — anda con más
+    # plata encima de la que se le fijó. No lo bloquea (sigue trabajando); el aviso existe para que
+    # el admin decida si lo manda a depositar.
+    for m in alertas.get("mensajeros_sobre_tope", []) or []:
+        ref = f"tope:mensajero:{m.get('mensajero_empleado_id')}"
+        nombre = m.get("mensajero_nombre") or "Un mensajero"
+        avisos.append((ref,
+            f"🎒 *LLEVA MUCHO EFECTIVO* — {nombre}\n"
+            f"Carga RD$ {_fmt_money(m.get('saldo'))}, RD$ {_fmt_money(m.get('exceso'))} por encima de "
+            f"su tope de RD$ {_fmt_money(m.get('tope'))}. No se le bloquea nada: decide si lo mandas "
+            f"a depositar o a entregar en central. También puedes bajar la alerta en el CRM → "
+            f"Operaciones (con motivo)."
+        ))
     for b in alertas.get("bancas_tickets_sin_recoger", []) or []:
         ref = f"estancado:tickets:{b.get('banca_id')}"
         nombre = b.get("nombre") or "Una banca"

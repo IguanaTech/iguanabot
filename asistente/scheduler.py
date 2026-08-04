@@ -77,6 +77,24 @@ def enviar_por_puente(telefono: str, texto: str, pdf: bytes | None, nombre: str 
                     json={**payload, "telefono": telefono}).raise_for_status()
 
 
+def _enviar_senal_de_vida(full, c_id: str, rep, dia: date) -> int:
+    """Una línea cuando el día cerró sin nada que contar. Ver el porqué en `_enviar_a_consorcio`."""
+    venta = reportes.venta_del_dia(rep)
+    cuerpo = (
+        f"🌙 *{full.nombre}* — día cerrado, {dia}\n"
+        f"Venta: {venta}. Nada pendiente.\n"
+        "_Si no te llega este mensaje algún día, el bot no está corriendo._"
+    )
+    enviados = 0
+    for tel in reportes.destinatarios(c_id):
+        try:
+            enviar_por_puente(tel, cuerpo, None, None)
+            enviados += 1
+        except Exception as ex:  # noqa: BLE001
+            print(f"[cierre] señal de vida a {tel} falló: {ex}")
+    return enviados
+
+
 def _enviar_a_consorcio(full, c_id: str, dia: date, preliminar: bool) -> int:
     """Arma y manda el reporte del `dia` a los destinatarios del consorcio. Devuelve cuántos salieron.
     `preliminar=True` antepone un aviso (el día aún no cerró formalmente)."""
@@ -86,8 +104,20 @@ def _enviar_a_consorcio(full, c_id: str, dia: date, preliminar: bool) -> int:
     # que a veces dice "no pasó nada" hace que dejen de abrirlo, y entonces el que sí importa
     # tampoco se abre.
     if not reportes.hubo_movimiento(rep):
-        print(f"[cierre] {full.nombre} {dia}: sin movimiento, no se manda reporte.")
-        return 0
+        # Sin movimiento no va el reporte — pero SÍ una línea de vida.
+        #
+        # La regla de callarse cuando no hay nada es buena: un mensaje diario que a veces dice «no
+        # pasó nada» entrena a no abrirlo. El problema es otro: desde el teléfono, «no llegó nada» y
+        # «no hubo nada» se ven IGUAL, y uno de los dos significa que el bot está caído.
+        #
+        # Ya nos pasó: el envío automático del cierre llevaba tiempo apagado por configuración
+        # (REPORTE_EOD_AUTO=false) y nadie se enteró, justamente porque el silencio se leía como
+        # «no hubo novedades».
+        #
+        # Una línea, con el número que importa. No es un reporte: es la prueba de que el bot está
+        # vivo y que el silencio de hoy es real.
+        print(f"[cierre] {full.nombre} {dia}: sin movimiento, va la señal de vida.")
+        return _enviar_senal_de_vida(full, c_id, rep, dia)
 
     texto = reportes.texto(rep)
     if preliminar:

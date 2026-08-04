@@ -159,6 +159,25 @@ def _rd(v) -> str | None:
         return str(v)
 
 
+def _entero(v) -> int:
+    """Monto (string bigint del wire) como int. 0 si no se puede leer — nunca revienta el reporte."""
+    try:
+        return int(v)
+    except (ValueError, TypeError):
+        return 0
+
+
+def venta_del_dia(rep: "Reporte") -> str:
+    """La venta del día ya formateada, o «no la pude leer».
+
+    La usa la señal de vida, que manda UN número. Si ese número no se pudo leer, se dice: una señal
+    de vida que informa «Venta: RD$ 0» cuando en realidad no se pudo consultar es peor que no
+    mandarla — afirma que no se vendió nada.
+    """
+    v = _resumen(rep.datos.get("ventas"), "total_monto", "monto")
+    return _rd(v) if v is not None else "no la pude leer"
+
+
 def texto(rep: Reporte) -> str:
     """Resumen para el cuerpo del mensaje de WhatsApp."""
     d = rep.datos
@@ -189,6 +208,30 @@ def texto(rep: Reporte) -> str:
     # Lo que no se pudo leer se dice. Una línea que falta se lee como "ese número no aplica hoy";
     # peor todavía, un reporte con la mitad de los números se lee como el reporte completo, y con
     # eso se toman decisiones de plata.
+    # ── QUÉ HAY PARA RETIRAR, banca por banca ────────────────────────────────────────────────
+    #
+    # Pedido de Eduardo (2026-08-04): «todas las bancas que tienen disponible para retirar deberían
+    # decirlo». Antes el reporte traía sólo el TOTAL, y un total no sirve para decidir a dónde
+    # mandar al mensajero — hay que saber cuál banca y cuánto.
+    #
+    # Va como LISTA y no como alarma por banca, también decisión suya: si cada una disparara su
+    # aviso, a media tarde estarían sonando todas y se dejarían de mirar. Acá lo dice todo y no
+    # molesta.
+    #
+    # SIN UMBRAL: se listan todas las que tengan algo. El dato ya venía en el operativo
+    # (`bancas_en_calle`, el desglose del disponible positivo); lo único que faltaba era decirlo.
+    detalle = (op.get("bancas_en_calle") or []) if isinstance(op, dict) else []
+    conMonto = [b for b in detalle if _entero(b.get("disponible")) > 0]
+    if conMonto:
+        conMonto.sort(key=lambda b: _entero(b.get("disponible")), reverse=True)
+        lineas.append("")
+        lineas.append("💰 *Disponible para retirar*")
+        for b in conMonto:
+            lineas.append(f"   • {b.get('nombre') or 'Banca'} — {_rd(b.get('disponible'))}")
+        total = sum(_entero(b.get("disponible")) for b in conMonto)
+        if len(conMonto) > 1:
+            lineas.append(f"   _Total: {_rd(total)} en {len(conMonto)} bancas_")
+
     if rep.fallidos:
         NOMBRES = {
             "operativo": "estado operativo", "ventas": "ventas", "pnl": "ganancia",

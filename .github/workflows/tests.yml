@@ -55,6 +55,19 @@ jobs:
       - name: dependencias
         run: pip install -r asistente/requirements.txt
 
+      # EL ESQUEMA. La base del servicio arranca vacía, y las dos pruebas que hablan con Postgres
+      # esperan sus tablas (`memoria`, `telegram_vinculo`, `consorcios`). Se aplica el MISMO
+      # `db/001_schema.sql` que se usa para montar la base de verdad — no una versión de mentira
+      # escrita a mano acá, que se desincronizaría en la primera migración y dejaría al CI probando
+      # contra un esquema que ya no existe.
+      #
+      # Lo encontró la primera corrida real, que llegó hasta acá: instaló todo, bajó los embeddings,
+      # conectó a pgvector, y ahí dijo «relation "memoria" does not exist».
+      - name: esquema de la base del asistente
+        env:
+          PGPASSWORD: asistente
+        run: psql -h 127.0.0.1 -p 15433 -U asistente -d asistente -v ON_ERROR_STOP=1 -f db/001_schema.sql
+
       # Que TODO el paquete compile. Es la red más barata que hay y caza el error
       # más tonto y más caro: un archivo que no parsea tumba el contenedor entero
       # al arrancar, y el bot queda mudo sin que nadie lo note (el silencio del bot

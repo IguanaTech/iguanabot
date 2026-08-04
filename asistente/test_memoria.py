@@ -33,6 +33,21 @@ def main() -> int:
         return 1
 
     with memoria._pool().connection() as cx:
+        # LOS DOS CONSORCIOS DE LA PRUEBA, creados por ella misma.
+        #
+        # `memoria.consorcio_id` tiene FK contra `consorcios`, así que sin estas filas TODO
+        # `recordar()` falla en silencio —el módulo se traga el error y sigue— y la prueba reporta
+        # nueve fallas que parecen de la memoria semántica y son de una tabla vacía.
+        #
+        # Antes esto andaba porque la base del desarrollador ya tenía consorcios de otras corridas.
+        # La primera corrida del CI, contra una base recién creada, lo dejó a la vista: una prueba
+        # que depende de datos que no crea sólo pasa en la máquina donde ya estaban.
+        for cid, nombre in ((CONS_A, "Consorcio de prueba A"), (CONS_B, "Consorcio de prueba B")):
+            cx.execute(
+                "INSERT INTO consorcios (id, nombre, backend_url, usuario, password_cifrado) "
+                "VALUES (%s, %s, 'http://localhost:0', 'prueba', 'x') "
+                "ON CONFLICT (id) DO NOTHING",
+                (cid, nombre))
         cx.execute("DELETE FROM memoria WHERE telefono IN (%s, %s)", (ANA, BETO))
 
     print("\n1. guardar y recuperar por PARECIDO (no por palabra exacta)")

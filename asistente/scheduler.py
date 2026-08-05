@@ -114,7 +114,7 @@ def _enviar_senal_de_vida(full, c_id: str, rep, dia: date) -> int:
         "_Si no te llega este mensaje algún día, el bot no está corriendo._"
     )
     entregados, fallidos = [], []
-    for tel in reportes.destinatarios(c_id):
+    for tel in reportes.destinatarios(c_id, full):
         try:
             enviar_por_puente(tel, cuerpo, None, None)
             entregados.append(tel)
@@ -155,7 +155,7 @@ def _enviar_a_consorcio(full, c_id: str, dia: date, preliminar: bool) -> int:
                  "(la última lotería podría no haber publicado sus números todavía).\n\n") + texto
     pdf = reportes.pdf(rep)
     entregados, fallidos = [], []
-    for tel in reportes.destinatarios(c_id):
+    for tel in reportes.destinatarios(c_id, full):
         try:
             enviar_por_puente(tel, texto, pdf, f"reporte-{rep.fecha}.pdf")
             entregados.append(tel)

@@ -298,24 +298,77 @@ def pdf(rep: Reporte) -> bytes | None:
     return HTML(string=html).write_pdf()
 
 
-# ── Destinatarios del reporte automático ──────────────────────────────────────
-def destinatarios(consorcio_id: str) -> list[str]:
-    """Teléfonos de quienes reciben el reporte del cierre: admin/encargado del consorcio."""
+# ── Destinatarios del reporte automático ─────────────────────────────────────
+#
+# DE DÓNDE SALEN, Y POR QUÉ CAMBIÓ.
+#
+# Salían del `directorio`, que se sincroniza del ROSTER DE EMPLEADOS del back: quien tenga teléfono
+# cargado en su ficha, entra. Eso tenía un problema que se cobró caro: el CRM tiene una pantalla
+# —«contactos del asistente»— donde el admin dice explícitamente QUIÉN usa el bot, y esa lista NO
+# era la que se usaba para mandar los reportes. Dos listas para lo mismo, y nadie las sincronizaba.
+#
+# El resultado real (2026-08-06): Eduardo estaba configurado como admin activo en la pantalla del
+# CRM, su ficha de empleado no tenía teléfono, y el reporte salía sólo para un encargado a un número
+# viejo — que además no estaba en Telegram, así que caía a WhatsApp, que llevaba un día caído. Él
+# había configurado todo bien; la configuración simplemente no llegaba a ningún lado.
+#
+# Ahora la fuente es `GET /api/crm/asistente/contactos`: la lista que el admin administra y ve. Si
+# el back no contesta, se cae al `directorio` de siempre — un reporte que no sale por un problema
+# de red es peor que uno que sale a la lista vieja.
+CONTACTOS_PATH = "/api/crm/asistente/contactos"
+
+
+def _contactos_del_crm(consorcio, roles: set[str]) -> list[str] | None:
+    """Teléfonos ACTIVOS de la lista que el admin administra en el CRM, filtrados por rol.
+    Devuelve None si no se pudo consultar — el que llama decide si cae al directorio."""
+    try:
+        with httpx.Client(timeout=20) as client:
+            r = client.get(consorcio.backend_url + CONTACTOS_PATH,
+                           headers={"Authorization": f"Bearer {auth.token_de(consorcio)}"})
+            r.raise_for_status()
+            data = r.json()
+        filas = data.get("data", data) if isinstance(data, dict) else data
+    except Exception as ex:  # noqa: BLE001
+        print(f"[destinatarios] no pude leer los contactos del CRM ({ex}); uso el directorio")
+        return None
+    out = []
+    for c in filas or []:
+        if c.get("activo") is False:
+            continue
+        if str(c.get("empleado_rol") or "") not in roles:
+            continue
+        tel = "".join(ch for ch in str(c.get("telefono") or "") if ch.isdigit())
+        if len(tel) >= 10:
+            out.append(tel)
+    return out
+
+
+def _del_directorio(consorcio_id: str, roles: set[str]) -> list[str]:
     with psycopg.connect(config.DATABASE_URL) as conn:
         rows = conn.execute(
-            "SELECT telefono FROM directorio WHERE consorcio_id = %s AND rol IN ('admin','encargado')",
-            (consorcio_id,),
+            "SELECT telefono FROM directorio WHERE consorcio_id = %s AND rol = ANY(%s)",
+            (consorcio_id, list(roles)),
         ).fetchall()
     return [r[0] for r in rows]
 
 
-def destinatarios_alarma(consorcio_id: str) -> list[str]:
-    """Teléfonos que reciben ALARMAS DE DINERO de ESTE consorcio: solo roles GLOBALES (admin/contable).
+def destinatarios(consorcio_id: str, consorcio=None) -> list[str]:
+    """Quienes reciben el reporte del cierre: admin/encargado."""
+    roles = {"admin", "encargado"}
+    if consorcio is not None:
+        del_crm = _contactos_del_crm(consorcio, roles)
+        if del_crm:
+            return del_crm
+    return _del_directorio(consorcio_id, roles)
+
+
+def destinatarios_alarma(consorcio_id: str, consorcio=None) -> list[str]:
+    """Quienes reciben ALARMAS DE DINERO: sólo roles GLOBALES (admin/contable).
     Se excluye al encargado a propósito: es banca-acotado y una alarma trae la banca/exposición de
     cualquier banca del consorcio (le filtraría bancas ajenas). Las alarmas son señal a nivel dueño."""
-    with psycopg.connect(config.DATABASE_URL) as conn:
-        rows = conn.execute(
-            "SELECT telefono FROM directorio WHERE consorcio_id = %s AND rol IN ('admin','contable')",
-            (consorcio_id,),
-        ).fetchall()
-    return [r[0] for r in rows]
+    roles = {"admin", "contable"}
+    if consorcio is not None:
+        del_crm = _contactos_del_crm(consorcio, roles)
+        if del_crm:
+            return del_crm
+    return _del_directorio(consorcio_id, roles)

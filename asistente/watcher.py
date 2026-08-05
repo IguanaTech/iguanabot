@@ -227,9 +227,26 @@ def _alarmas_dinero_estancado(consorcio: Consorcio) -> list[tuple[str, str]]:
         n = b.get("pendientes") or "?"
         dias = b.get("dias_mas_viejo")
         dias_txt = f", el más viejo {dias} día(s)" if dias is not None else ""
+        # EL MENSAJE TIENE QUE DECIR CUÁNTO Y CUÁLES.
+        #
+        # Antes decía «2 ticket(s) vencidos sin recoger, el más viejo 7 día(s)» y nada más. Dos
+        # tickets pueden ser RD$40 o RD$18.020, y la decisión de mandar un mensajero hoy o el lunes
+        # no es la misma. Con dinero, un aviso que no dice cuánto obliga a ir a buscarlo al CRM —
+        # y entonces el aviso no sirvió de nada, sólo asustó.
+        #
+        # Se agregan el MONTO y los CÓDIGOS (hasta 5) para que el admin pueda nombrarlos por
+        # teléfono en vez de decir «los tickets viejos».
+        monto = b.get("monto_total")
+        monto_txt = f" por RD$ {_fmt_money(monto)}" if monto not in (None, "", "0") else ""
+        codigos = [c for c in (b.get("codigos") or []) if c]
+        codigos_txt = ""
+        if codigos:
+            lista = ", ".join(str(c) for c in codigos[:5])
+            resto = int(n) - len(codigos) if str(n).isdigit() else 0
+            codigos_txt = f"\nSon: {lista}" + (f" y {resto} más." if resto > 0 else ".")
         avisos.append((ref,
             f"🎫 *TICKETS SIN RECOGER* — {nombre}\n"
-            f"{n} ticket(s) vencidos sin recoger{dias_txt}. "
+            f"{n} ticket(s) vencidos sin recoger{monto_txt}{dias_txt}.{codigos_txt}\n"
             f"Manda a recogerlos, o baja la alerta en el CRM → Operaciones."
         ))
     return avisos
@@ -334,7 +351,7 @@ def revisar_todos() -> None:
         if config.ALARMAS_DESTINATARIOS and len(consorcios) == 1:
             destinos = config.ALARMAS_DESTINATARIOS
         else:
-            destinos = reportes.destinatarios_alarma(full.id)
+            destinos = reportes.destinatarios_alarma(full.id, full)
         if not destinos:
             print(f"[watcher] {full.nombre}: hay alarmas pero no hay destinatarios configurados.")
             continue

@@ -66,9 +66,21 @@ def preparar() -> None:
 
 
 def _normalizar(telefono: str) -> str:
-    """Sólo dígitos, como los guarda el resto del sistema (los wa_id vienen así). Telegram manda el
-    número con '+' y a veces con espacios; sin normalizar, el MISMO teléfono no se reconocería."""
-    return re.sub(r"\D", "", telefono or "")
+    """El teléfono reducido a lo que lo identifica: sus últimos 10 dígitos.
+
+    Antes era sólo «quitar lo que no sea dígito», y eso dejaba pasar el problema real: el MISMO
+    número aparece con y sin el 1 del país según de dónde venga. Telegram lo comparte como
+    `18099074550`; la ficha del empleado lo guarda como `(809) 907-4550` → `8099074550`. Dos formas
+    del mismo teléfono que no coincidían.
+
+    Se cobró caro (2026-08-06): Eduardo estaba vinculado a Telegram, tenía su teléfono en la ficha,
+    y el reporte igual se le iba por WhatsApp —que estaba caído— porque la búsqueda no encontraba
+    su vínculo. Un número que existe dos veces escrito distinto es un número que no existe.
+
+    Los 10 últimos porque un número dominicano son 10 dígitos (809/829/849 + 7). Recortar por el
+    final también aguanta prefijos internacionales más largos si algún día aparecen."""
+    solo = re.sub(r"\D", "", telefono or "")
+    return solo[-10:] if len(solo) > 10 else solo
 
 
 def telefono_de(chat_id: int) -> str | None:

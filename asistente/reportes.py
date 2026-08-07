@@ -7,7 +7,7 @@ de solo-lectura, poder ver ventas/balance (REPORTES_VER_VENTAS, BALANCE_VER) par
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 import psycopg
@@ -147,8 +147,19 @@ def hay_pendientes(rep: "Reporte") -> list[str]:
     return fuera
 
 
+# Hoy en zona DOMINICANA. El container corre en UTC, así que `date.today()` de las 8 de la noche en
+# adelante ya es el día SIGUIENTE: pedirle «cómo fue el día» al bot a esa hora devolvía el reporte
+# de mañana, todo en ceros, con pinta de día tranquilo. `tools.py` ya tenía este mismo helper y este
+# mismo comentario — le faltaba justo al reporte. RD es UTC-4 fijo (sin horario de verano).
+_TZ_RD = timezone(timedelta(hours=-4))
+
+
+def hoy_rd() -> date:
+    return datetime.now(_TZ_RD).date()
+
+
 def datos_dia(consorcio: Consorcio, dia: date | None = None) -> Reporte:
-    dia = dia or date.today()
+    dia = dia or hoy_rd()
     d = dia.isoformat()
     # Endpoints verificados contra fortuna-api (claves reales del resumen, 2026-07-22):
     # ventas → resumen.total_monto ; pnl → resumen.resultado_operativo ;

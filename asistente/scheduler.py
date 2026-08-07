@@ -78,31 +78,24 @@ def enviar_por_puente(telefono: str, texto: str, pdf: bytes | None, nombre: str 
 
 
 def _avisar_no_entregados(fallidos: list[str], entregados: list[str]) -> None:
-    """Le cuenta a QUIEN SÍ recibió que a alguien no le llegó.
+    """Deja constancia de a quién NO le llegó — en el log, NO en el chat del admin.
 
-    Un envío que falla imprimía una línea en el log del contenedor y ahí moría. Nadie lee el log del
-    contenedor — y desde el lado de la persona que no recibió nada, «no me llegó» y «no hubo nada que
-    contar» se ven exactamente igual. O sea: el reporte podía dejar de llegarle a alguien por semanas
-    sin que nadie se enterara.
+    Esto mandaba un mensaje aparte a los que sí recibieron: «No pude entregar este reporte a todos.
+    Sin canal: 8492074887». La idea era que un destinatario podía dejar de recibir por semanas sin
+    que nadie se enterara. Pero en la práctica ese número simplemente no está vinculado, y eso no
+    cambia de un día para el otro: el aviso salía en CADA reporte, siempre igual, contando algo que
+    el admin ya sabe y que no puede resolver desde el chat.
 
-    El aviso va a los que SÍ recibieron, que son los únicos alcanzables por definición. Es una línea
-    corta pegada al mensaje que ya esperaban, no una notificación nueva: si nadie recibió nada, no
-    hay a quién avisarle y el log sigue siendo el único registro (no se inventa un canal que no hay).
+    Eduardo lo cortó (2026-08-06): «si no está vinculado no necesito saber eso, no entiendo la
+    utilidad de enviármelo». Y tiene razón en algo más de fondo: un aviso que se repite sin cambiar
+    deja de leerse, y arrastra a los que sí importan — la misma razón por la que el reporte no se
+    manda cuando no hay nada que contar.
+
+    A quién le llegó y a quién no sigue quedando registrado por envío (abajo, en `_enviar_*`). El
+    lugar donde se administra QUIÉN recibe es el CRM, no un mensaje de chat.
     """
-    if not fallidos or not entregados:
-        return
-    quienes = ", ".join(fallidos)
-    aviso = (
-        "⚠ *No pude entregar este reporte a todos*\n"
-        f"Sin canal: {quienes}.\n"
-        "Suele ser que esa persona no está vinculada a Telegram y WhatsApp no está en servicio. "
-        "Se vincula escribiéndole al bot de Telegram."
-    )
-    for tel in entregados:
-        try:
-            enviar_por_puente(tel, aviso, None, None)
-        except Exception as ex:  # noqa: BLE001 — el aviso del aviso no puede encadenar fallos
-            print(f"[cierre] no se pudo avisar del no-entregado a {tel}: {ex}")
+    if fallidos:
+        print(f"[cierre] entregado a {len(entregados)}; sin canal: {', '.join(fallidos)}", flush=True)
 
 
 def _enviar_senal_de_vida(full, c_id: str, rep, dia: date) -> int:

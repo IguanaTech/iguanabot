@@ -87,6 +87,51 @@ completo = reportes.Reporte(
 check("No pude leer" not in reportes.texto(completo),
       "sin fallas no debe aparecer el aviso")
 
+# ── 3b. «Nada pendiente» no se dice sin haberlo mirado ───────────────────────
+#
+# El bot le mandó a Eduardo: «día cerrado — Venta: RD$ 0. Nada pendiente.» Esa línea sale de la
+# rama corta, la que se toma cuando `hubo_movimiento` da False. Y ese False sólo miraba ventas y
+# premios: un día sin vender puede tener perfectamente RD$ 40,000 esperando en las bancas, una
+# deuda abierta y papelería vencida. O sea que el bot AFIRMABA que no había nada pendiente sin
+# haberlo mirado nunca. Eduardo: «aunque no se haya vendido nada hay dinero que recoger».
+cero = {"ventas": {"resumen": {"total_monto": "0", "total_tickets": 0}},
+        "ganadores": {"resumen": {"total_premios": "0", "premios_por_pagar": "0",
+                                  "total_pagados": 0}}}
+
+con_plata = reportes.Reporte(
+    consorcio="X", fecha="2026-08-06",
+    datos={**cero, "operativo": {"bancas_en_calle": [
+        {"nombre": "Banca el Cine", "disponible": "40000"},
+        {"nombre": "Otra", "disponible": "0"},
+    ]}},
+    fallidos=[])
+check(reportes.hubo_movimiento(con_plata) is True,
+      "sin ventas pero con dinero para retirar, el día SÍ tiene algo que contar")
+check(any("40.000" in p for p in reportes.hay_pendientes(con_plata)),
+      "los pendientes deben decir CUÁNTO hay para retirar, no sólo que hay algo")
+
+con_alerta = reportes.Reporte(
+    consorcio="X", fecha="2026-08-06",
+    datos={**cero, "operativo": {"alertas": {"bancas_tickets_sin_recoger": [{"banca_id": "b1"}]}}},
+    fallidos=[])
+check(reportes.hubo_movimiento(con_alerta) is True,
+      "una alerta abierta es algo que atender aunque no se haya vendido nada")
+
+sin_nada = reportes.Reporte(
+    consorcio="X", fecha="2026-08-06",
+    datos={**cero, "operativo": {"bancas_en_calle": [], "alertas": {"x": []}}},
+    fallidos=[])
+check(reportes.hubo_movimiento(sin_nada) is False,
+      "un día de verdad quieto sigue siendo silencio (regla de Eduardo)")
+
+operativo_caido = reportes.Reporte(
+    consorcio="X", fecha="2026-08-06",
+    datos={**cero, "operativo": None},
+    fallidos=["operativo"])
+check(reportes.hubo_movimiento(operativo_caido) is True,
+      "si el estado operativo no se pudo leer, no se puede afirmar que no hay pendientes")
+
+
 # ── 4. `fallidos` se llena solo, no a mano ───────────────────────────────────
 # (se verifica la forma, no la red: `datos_dia` pega al back)
 check("fallidos" in reportes.Reporte.__dataclass_fields__,

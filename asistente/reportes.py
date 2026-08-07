@@ -84,8 +84,14 @@ def hubo_movimiento(rep: "Reporte") -> bool:
     no abrirlo — y el día que trae algo importante, tampoco lo abre. El silencio es información:
     significa que no hubo movimiento.
 
-    "Algo que contar" = se vendió, se pagó o quedó pendiente un premio. Si los tres están en cero,
-    la banca no operó ese día y no hay reporte que mandar.
+    "Algo que contar" = se vendió, se pagó, quedó pendiente un premio, HAY DINERO ESPERANDO EN LA
+    CALLE, o hay una alerta abierta. Si todo eso está en cero, la banca no operó y no hay reporte.
+
+    Lo del dinero esperando se agrega porque el atajo mentía. Cuando esto daba False, el bot mandaba
+    una sola línea: «Venta: RD$ 0. Nada pendiente.» — y AFIRMABA que no había nada pendiente sin
+    haberlo mirado nunca. Un día sin ventas puede tener perfectamente RD$ 40,000 sin recoger en las
+    bancas, una deuda abierta y papelería vencida. Eduardo lo dijo así: «aunque no se haya vendido
+    nada hay dinero que recoger». Con dinero en juego, "no miré" no se puede escribir como "no hay".
 
     PERO el silencio sólo es información si los números se pudieron LEER. Si `ventas` o `ganadores`
     fallaron, sus resúmenes vienen vacíos, los contadores dan cero y esta función concluía "no hubo
@@ -107,7 +113,38 @@ def hubo_movimiento(rep: "Reporte") -> bool:
                 continue
         return False
     return (_n("ventas", "total_monto", "total_vendido", "total_tickets")
-            or _n("ganadores", "total_premios", "premios_por_pagar", "total_pagados"))
+            or _n("ganadores", "total_premios", "premios_por_pagar", "total_pagados")
+            or bool(hay_pendientes(rep)))
+
+
+def hay_pendientes(rep: "Reporte") -> list[str]:
+    """Qué hay abierto AHORA, más allá de si se vendió: dinero esperando y alertas sin bajar.
+
+    Devuelve etiquetas cortas (para poder decirlas, no sólo contarlas). Si el bloque operativo no
+    se pudo leer, devuelve una etiqueta que lo dice: no saber NO es lo mismo que no haber.
+    """
+    # Ojo con la diferencia: la clave AUSENTE es "no se pidió" (sólo pasa en pruebas), mientras que
+    # la clave en None es "se pidió y el back no contestó" — y eso último sí hay que decirlo.
+    if "operativo" not in rep.datos:
+        return []
+    op = rep.datos["operativo"]
+    if op is None:
+        return ["no se pudo leer el estado operativo"]
+    if not isinstance(op, dict):
+        return []
+    fuera = []
+    # Dinero de las bancas listo para retirar: es plata que está en la calle esperando un mensajero.
+    en_calle = [b for b in (op.get("bancas_en_calle") or []) if _entero(b.get("disponible")) > 0]
+    if en_calle:
+        total = sum(_entero(b.get("disponible")) for b in en_calle)
+        fuera.append(f"{_rd(total)} para retirar en {len(en_calle)} banca(s)")
+    # Cualquier alerta abierta del panel cuenta: si el CRM la muestra, es algo que alguien tiene que
+    # atender. No se enumeran tipos a mano para que una alerta nueva entre sola.
+    alertas = op.get("alertas") or {}
+    abiertas = sum(len(v) for v in alertas.values() if isinstance(v, list))
+    if abiertas:
+        fuera.append(f"{abiertas} alerta(s) abierta(s)")
+    return fuera
 
 
 def datos_dia(consorcio: Consorcio, dia: date | None = None) -> Reporte:

@@ -211,10 +211,13 @@ def _alarmas_dinero_estancado(consorcio: Consorcio) -> list[tuple[str, str]]:
     # peor que ninguno. NO ES UN ERROR DE LA VENDEDORA, y el mensaje lo dice: ella es la que lo ve
     # primero, y mientras tanto está trabajando sin ver su balance.
     for d in alertas.get("pos_descuadres", []) or []:
+        if d.get("reportes") is None:
+            print(f"[watcher] descuadre sin 'reportes', no se avisa: {str(d)[:120]}")
+            continue
         ref = f"descuadre:estacion:{d.get('estacion_id')}"
         banca = d.get("nombre") or "Una banca"
         est = d.get("estacion_nombre") or "una estación"
-        n = d.get("reportes") or "?"
+        n = d["reportes"]
         avisos.append((ref,
             f"⚖️ *EL BALANCE NO CUADRA* — {banca} ({est})\n"
             f"El punto de venta recibió un balance que no cierra consigo mismo y se negó a "
@@ -222,9 +225,21 @@ def _alarmas_dinero_estancado(consorcio: Consorcio) -> list[tuple[str, str]]:
             f"Mientras tanto ella está trabajando sin ver su balance. Revisa la banca."
         ))
     for b in alertas.get("bancas_tickets_sin_recoger", []) or []:
+        # UN AVISO QUE NO SABE CUÁNTO ES, NO SALE.
+        #
+        # Esto era `b.get("pendientes") or "?"`, y ese «?» fue el único síntoma visible del peor bug
+        # de la semana: el back mandaba las DEUDAS de empleados bajo el rótulo de tickets, y al admin
+        # le llegó «TICKETS SIN RECOGER — Dora La Exploradora, ? ticket(s)» cuando era una deuda de
+        # RD$48.936. El back ya está arreglado y tiene su prueba de contrato, pero el bot no tenía
+        # defensa propia: si mañana le llega otra lista con la forma equivocada, volvería a mandar un
+        # mensaje de dinero con un signo de pregunta. Un aviso que no puede decir cuánto es no
+        # informa: alarma. Mejor no mandarlo y dejar el rastro en el log.
+        if b.get("pendientes") is None:
+            print(f"[watcher] item de tickets sin 'pendientes', no se avisa: {str(b)[:120]}")
+            continue
         ref = f"estancado:tickets:{b.get('banca_id')}"
         nombre = b.get("nombre") or "Una banca"
-        n = b.get("pendientes") or "?"
+        n = b["pendientes"]
         dias = b.get("dias_mas_viejo")
         dias_txt = f", el más viejo {dias} día(s)" if dias is not None else ""
         # EL MENSAJE TIENE QUE DECIR CUÁNTO Y CUÁLES.

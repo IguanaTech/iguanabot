@@ -37,12 +37,24 @@ def main() -> int:
         cx.execute("DELETE FROM telegram_vinculo WHERE chat_id IN (%s,%s)", (CHAT_ANA, CHAT_MALO))
 
     print("\n1. vincular compartiendo el contacto PROPIO")
+    # LOS ÚLTIMOS 10 DÍGITOS, sin el 1 del país. Este test esperaba "18091110000" y quedó en rojo
+    # cuando la normalización cambió (2026-08-06) — encodeaba el contrato viejo. El cambio fue a
+    # propósito y por un caso real: Eduardo estaba vinculado a Telegram y el reporte de cierre no le
+    # llegaba, porque Telegram comparte `18099074550` y su ficha guarda `(809) 907-4550`. Dos formas
+    # del mismo número que no coincidían. Un dominicano son 10 dígitos; el 1 sobra.
     tel = tv.vincular(CHAT_ANA, USER_ANA, USER_ANA, TEL_ANA)
-    debe(tel == "18091110000", f"normaliza el número a sólo dígitos (dio {tel!r})")
-    debe(tv.telefono_de(CHAT_ANA) == "18091110000", "el chat resuelve a su teléfono")
-    debe(tv.chat_de("18091110000") == CHAT_ANA, "y el teléfono resuelve a su chat (envío proactivo)")
+    debe(tel == "8091110000", f"normaliza a los últimos 10 dígitos (dio {tel!r})")
+    debe(tv.telefono_de(CHAT_ANA) == "8091110000", "el chat resuelve a su teléfono")
+    debe(tv.chat_de("8091110000") == CHAT_ANA, "y el teléfono resuelve a su chat (envío proactivo)")
     debe(tv.chat_de("+1-809-111-0000") == CHAT_ANA,
          "el teléfono se resuelve venga como venga formateado")
+    # LO QUE EL CAMBIO VINO A GARANTIZAR, escrito para que no se pierda otra vez: el MISMO número
+    # con y sin el 1 del país tiene que caer en el mismo chat.
+    debe(tv.chat_de("18091110000") == CHAT_ANA,
+         "con el 1 del país adelante NO resolvió al mismo chat — es exactamente el bug que dejó a "
+         "Eduardo sin recibir el reporte de cierre")
+    debe(tv.chat_de("(809) 111-0000") == CHAT_ANA,
+         "como lo guarda la ficha del empleado tampoco resolvió")
 
     print("\n2. SUPLANTACIÓN — lo que este archivo existe para impedir")
     debe(tv.vincular(CHAT_MALO, USER_MALO, USER_ANA, TEL_ANA) is None,
